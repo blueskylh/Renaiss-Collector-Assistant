@@ -222,10 +222,11 @@ Process:
 2. Use `attributes.Serial` directly from the Marketplace response when present. Marketplace rows include `attributes`, so most Sequential Cert scans do **not** need per-card `renaiss card <tokenId>` calls.
 3. Call `renaiss card <tokenId> --json` only as a fallback if a marketplace row is missing `attributes.Serial` or if the user asks for richer card detail.
 4. Parse serial values like `PSA127320817` into `serial_number = 127320817`.
-5. Group by `serial_number`; for every `serial + 1` group, generate valid pairs across both groups so duplicate serial listings do not get dropped.
-6. Do **not** require same card.
-7. Do **not** require PSA 10.
-8. Mark special relation tags rather than filtering them out.
+5. Re-check `gradingCompany == "PSA"` inside the scanner unless the user explicitly requests a non-PSA custom scan.
+6. Group by `serial_number`; for every `serial + 1` group, generate valid pairs across both groups so duplicate serial listings do not get dropped.
+7. Do **not** require same card.
+8. Do **not** require PSA 10.
+9. Mark special relation tags rather than filtering them out.
 
 Special tags to compute:
 
@@ -295,6 +296,7 @@ CLI fallback / conservative defaults:
 - Default batch cooldown: 90 seconds.
 - If any batch returns `Forbidden`, cool down before continuing.
 - Resume from the output JSONL: skip completed tokenIds and retry prior error rows unless the user disables retries.
+- JSONL readers tolerate a truncated final line so interrupted scans can resume.
 - Cache completed rows for 24 hours unless the user asks to refresh immediately.
 
 Seller fee:
@@ -342,11 +344,14 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
 
 Rules:
 
-- Use the marketplace card's `attributes.Serial` as the Index API search query.
+- Use `/v1/graded/{cert}` first with the marketplace card's `attributes.Serial` / PSA cert.
+- Require exact normalized cert match, e.g. `PSA127320817 == PSA127320817`; never rank zero-score search results.
+- If exact cert lookup has no price, write the row to `errors.jsonl` and do not create an arbitrage candidate.
 - Compare Renaiss OS Index benchmark price with Renaiss marketplace ask.
 - Deduct 2% seller fee from the benchmark sell side.
 - Output `index_confidence` so users can see whether the benchmark is high/low confidence.
 - Explain that Index price is not executable liquidity.
+- Continue scanning after per-card Index API errors and save errors to JSONL.
 
 Mandatory risk notes:
 
@@ -355,6 +360,7 @@ Mandatory risk notes:
 - Buying then selling may fail or take time.
 - Seller pays 2% fee; included in net calculations.
 - Data may be stale; refresh before execution.
+- Expired `askExpiresAt` listings must be skipped.
 - `askPriceInUSDT` and `fmvPriceInUSD` use different raw units.
 
 ---
@@ -419,6 +425,13 @@ Wallet classification:
 | Not Renaiss | ERC4337 EntryPoint, unrelated airdrops, unrelated tokens, bridges/CEX unless part of a classified Renaiss tx |
 
 Report wallet stats:
+
+
+Wallet scan completeness:
+
+- `--max-wallets` defaults to 20.
+- If queue still has wallets after the limit, set `wallet_scan_truncated = true`.
+- When truncated, mark `pnl_completeness = partial` and do not present spend/income/net spend as complete.
 
 - Wallet cluster and migration transactions.
 - Pack count, total spend, and inferred pack type.
@@ -509,9 +522,10 @@ Before responding to the user, verify:
 - For Sequential Cert, did you use `attributes.Serial`, not `cardNumber`?
 - For arbitrage, did you deduct 2% seller fee and include risk notes?
 - For wallet analysis, did you merge legacy and current wallets and exclude migration from PnL?
-- For SBT, did you account for ERC-1155 `TransferBatch`?
+- For SBT, did you account for ERC-1155 `TransferBatch` and avoid multi-user SBT-overlap migration false positives?
 - For slow `renaiss card` calls, did you use bounded concurrency or explain the runtime?
-- For Index API arbitrage, did you require/confirm API key for batch runs and show `index_confidence`?
+- For Index API arbitrage, did you use exact `/v1/graded/{cert}` matching, show `index_confidence`, and save per-card errors?
+- Did you skip expired asks and avoid non-PSA rows in default Sequential Cert scans?
 - Did you save raw data when running sequential or arbitrage scans?
 
 

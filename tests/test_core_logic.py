@@ -22,10 +22,10 @@ class CoreLogicTests(unittest.TestCase):
 
     def test_sequential_duplicate_serials_generate_all_pairs(self):
         rows = [
-            {"tokenId": "100A", "serial_number": 100, "serial_raw": "PSA100", "ask_usdt": 1, "fmv_usd": 2},
-            {"tokenId": "100B", "serial_number": 100, "serial_raw": "PSA100", "ask_usdt": 1, "fmv_usd": 2},
-            {"tokenId": "101A", "serial_number": 101, "serial_raw": "PSA101", "ask_usdt": 1, "fmv_usd": 2},
-            {"tokenId": "101B", "serial_number": 101, "serial_raw": "PSA101", "ask_usdt": 1, "fmv_usd": 2},
+            {"tokenId": "100A", "serial_number": 100, "serial_raw": "PSA100", "gradingCompany": "PSA", "ask_usdt": 1, "fmv_usd": 2},
+            {"tokenId": "100B", "serial_number": 100, "serial_raw": "PSA100", "gradingCompany": "PSA", "ask_usdt": 1, "fmv_usd": 2},
+            {"tokenId": "101A", "serial_number": 101, "serial_raw": "PSA101", "gradingCompany": "PSA", "ask_usdt": 1, "fmv_usd": 2},
+            {"tokenId": "101B", "serial_number": 101, "serial_raw": "PSA101", "gradingCompany": "PSA", "ask_usdt": 1, "fmv_usd": 2},
         ]
         out = cli.build_sequential_candidates(rows)
         self.assertEqual(len(out), 4)
@@ -94,10 +94,14 @@ class CoreLogicTests(unittest.TestCase):
         self.assertEqual(wallet.normalize_metadata_uri("ipfs://abc/1.json", 1), "https://ipfs.io/ipfs/abc/1.json")
 
     def test_index_arbitrage_includes_confidence(self):
-        old = cli.search_index_by_serial
+        old = cli.graded_index_lookup
         try:
-            cli.search_index_by_serial = lambda serial, limit=3: {
-                "data": {"results": [{
+            cli.graded_index_lookup = lambda cert, retries=2: {
+                "found": True,
+                "exact_cert_match": True,
+                "normalized_cert": "PSA123",
+                "response_cert": "PSA123",
+                "data": {"card": {
                     "priceUsdCents": 20000,
                     "confidence": "prime",
                     "lastSaleAt": "2026-07-10T00:00:00.000Z",
@@ -105,17 +109,59 @@ class CoreLogicTests(unittest.TestCase):
                     "name": "Test Card",
                     "gradeLabel": "PSA 10",
                     "company": "PSA",
-                }]}
+                }}
             }
-            rows, searched = cli.build_index_arbitrage_candidates([
+            rows, searched, errors = cli.build_index_arbitrage_candidates([
                 {"tokenId": "x", "name": "Test Card", "serial_raw": "PSA123", "serial_number": 123, "ask_usdt": 100, "gradingCompany": "PSA", "grade": "10"}
             ], delay=0)
         finally:
-            cli.search_index_by_serial = old
+            cli.graded_index_lookup = old
         self.assertEqual(searched, 1)
+        self.assertEqual(errors, [])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["index_confidence"], "prime")
+        self.assertTrue(rows[0]["exact_cert_match"])
         self.assertGreater(rows[0]["index_spread_usdt"], 0)
+
+    def test_jsonl_reader_skips_truncated_last_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "data.jsonl"
+            p.write_text('{"tokenId":"1"}\n{"tokenId":"2"', encoding="utf-8")
+            rows = cli.read_jsonl(p)
+        self.assertEqual(rows, [{"tokenId": "1"}])
+
+    def test_sequential_requires_psa_by_default(self):
+        rows = [
+            {"tokenId": "1", "serial_number": 100, "serial_raw": "BGS100", "gradingCompany": "BGS", "ask_usdt": 1},
+            {"tokenId": "2", "serial_number": 101, "serial_raw": "PSA101", "gradingCompany": "PSA", "ask_usdt": 1},
+        ]
+        self.assertEqual(cli.build_sequential_candidates(rows), [])
+
+    def test_expired_ask_skipped_in_arbitrage(self):
+        rows = [{"tokenId": "expired", "ask_usdt": 1, "top_offer_usdt": 100, "askExpiresAt": "2000-01-01T00:00:00Z"}]
+        self.assertEqual(cli.build_arbitrage_candidates(rows), [])
+
+    def test_multi_user_sbt_overlap_without_direct_transfer_is_not_edge(self):
+        old_a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        old_b = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        new_c = "0xcccccccccccccccccccccccccccccccccccccccc"
+        new_d = "0xdddddddddddddddddddddddddddddddddddddddd"
+        decoded = {
+            "classification": "legacy_wallet_migration",
+            "to": wallet.MIGRATION,
+            "tx_hash": "0xmulti",
+            "block_number": 1,
+            "renaiss_sbt_batches": [
+                {"from": old_a, "to": wallet.ZERO, "ids": [5]},
+                {"from": old_b, "to": wallet.ZERO, "ids": [5]},
+                {"from": wallet.ZERO, "to": new_c, "ids": [5]},
+                {"from": wallet.ZERO, "to": new_d, "ids": [5]},
+            ],
+            "usdt_transfers": [],
+            "renaiss_nft_transfers": [],
+            "renaiss_sbt_singles": [],
+        }
+        self.assertEqual(wallet.migration_edges(decoded), [])
 
     def test_dotenv_loader(self):
         with tempfile.TemporaryDirectory() as td:

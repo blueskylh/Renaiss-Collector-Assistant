@@ -34,7 +34,7 @@ Rules:
 
 Use this only when the user has Renaiss OS Index API key/secret. Public Index access is limited to 10 requests/day/IP and is not enough for scanning many marketplace cards.
 
-Input is the Renaiss marketplace snapshot. The scanner uses each card's marketplace `attributes.Serial` value as the Index API search query, then compares Index benchmark price with Renaiss market ask:
+Input is the Renaiss marketplace snapshot. The scanner uses each card's marketplace `attributes.Serial` value as an exact `/v1/graded/{cert}` lookup, requires normalized cert equality, then compares Index benchmark price with Renaiss market ask:
 
 ```bash
 python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
@@ -60,7 +60,10 @@ Output must include:
 - `index_spread_pct`
 - `index_confidence`
 - `index_href`
+- `exact_cert_match`
+- `index_response_cert`
 - risk notes
+- per-card failures in `OUT.errors.jsonl`
 
 Risk language:
 
@@ -68,5 +71,6 @@ Risk language:
 - Renaiss market ask may change or expire.
 - Top offer may expire, withdraw, or have conditions.
 - Seller fee is included; gas is ignored by default.
+- Expired asks are skipped.
 
 If the user wants to buy a candidate, tell them to search the PSA cert / serial or card details on `https://www.renaiss.xyz/`.

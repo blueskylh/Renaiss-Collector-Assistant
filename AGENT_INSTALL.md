@@ -167,7 +167,8 @@ python3 scripts/renaiss_index_api.py indices
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address 0x032e4a8eb38843a65ce5e65131d1f99c10b03201 \
   --out outputs/wallet_report.json \
-  --out-md outputs/wallet_report.md
+  --out-md outputs/wallet_report.md \
+  --max-wallets 20
 ```
 
 如果能生成 JSON 和 Markdown 报告，说明 wallet 模块可用。
@@ -241,6 +242,16 @@ python3 scripts/renaiss_cli_tools.py sequential-scan \
   --cards data/psa_marketplace.jsonl \
   --out outputs/sequential_candidates.csv
 ```
+
+### Index 价格套利扫描（需要 Index API key）
+
+```bash
+python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
+  --cards data/marketplace_all_listed.jsonl \
+  --out outputs/index_arbitrage_candidates.csv
+```
+
+这会使用 `/v1/graded/{cert}` 精确匹配 PSA cert；不能精确匹配或没有 Index 价格的卡会写入 `*.errors.jsonl`，不会进入套利榜单。
 
 ### 套利扫描
 

@@ -361,6 +361,7 @@ def migration_edges(decoded):
             direct_pairs[(f, t)]["nft"] += 1
 
     edge_map = {}
+    single_pair_context = len([a for a in burned_by_old if valid_wallet(a)]) == 1 and len([a for a in minted_by_new if valid_wallet(a)]) == 1
     for old, burned_ids in burned_by_old.items():
         if not valid_wallet(old):
             continue
@@ -368,9 +369,15 @@ def migration_edges(decoded):
             if not valid_wallet(new) or old == new:
                 continue
             overlap = burned_ids & minted_ids
-            # Pair SBT burn/mint only when IDs overlap. If both sides are empty,
-            # there is no useful SBT identity evidence.
+            # SBT IDs are ERC-1155 badge types, not user-unique IDs. In multi-user
+            # migration transactions, overlapping badge IDs alone can create false
+            # A->C/A->D/B->C/B->D edges. Only accept SBT-only evidence when the tx
+            # has exactly one old and one new wallet; otherwise require direct
+            # old->new USDT/NFT evidence before creating an edge.
             if not overlap:
+                continue
+            direct = direct_pairs.get((old, new), {})
+            if not single_pair_context and not (direct.get("usdt") or direct.get("nft")):
                 continue
             edge_map[(old, new)] = {
                 "old_wallet": old,
@@ -381,6 +388,7 @@ def migration_edges(decoded):
                 "migrated_usdt": 0.0,
                 "migrated_nft_count": 0,
                 "migrated_sbt_ids": sorted(overlap),
+                "ambiguous_migration_guard": not single_pair_context,
                 "evidence": ["sbt_burn_mint_same_tx"],
             }
 
@@ -585,14 +593,15 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
     }
 
 
-def build_wallet_report(address, limit=100, source="auto", max_pages=5):
+def build_wallet_report(address, limit=100, source="auto", max_pages=5, max_wallets=20):
     address = address.lower()
     history_by_wallet = {}
     wallet_details = {}
     decoded_by_hash = {}
     queue = [address]
     seen_wallets = set()
-    while queue and len(seen_wallets) < 6:
+    wallet_scan_truncated = False
+    while queue and len(seen_wallets) < max(1, max_wallets):
         w = queue.pop(0).lower()
         if w in seen_wallets:
             continue
@@ -618,7 +627,16 @@ def build_wallet_report(address, limit=100, source="auto", max_pages=5):
                 for candidate in [e["old_wallet"], e["new_wallet"]]:
                     if candidate not in seen_wallets and candidate not in queue:
                         queue.append(candidate)
+    wallet_scan_truncated = bool(queue)
+    wallets_pending = sorted(set(queue))
     summary = summarize_cluster(address, history_by_wallet, decoded_by_hash, wallet_details)
+    summary["wallet_scan_truncated"] = wallet_scan_truncated
+    summary["wallets_scanned"] = len(seen_wallets)
+    summary["wallets_pending"] = wallets_pending
+    summary["max_wallets"] = max_wallets
+    summary["pnl_completeness"] = "partial" if wallet_scan_truncated else "complete_within_fetched_history"
+    if wallet_scan_truncated:
+        summary.setdefault("data_notes", []).append("Wallet scan hit --max-wallets; spend/income/net spend are partial until pending wallets are scanned.")
     return {
         "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "source": "BSC wallet-history index + BSC RPC receipts",
@@ -642,6 +660,9 @@ def write_wallet_markdown(report, out_md):
     lines.append(f"- Current wallet: `{s['current_wallet']}`")
     lines.append(f"- Legacy wallets: {', '.join('`'+w+'`' for w in s['legacy_wallets']) if s['legacy_wallets'] else 'none detected'}")
     lines.append(f"- Migration detected: {s['migration_detected']}")
+    lines.append(f"- Wallet scan completeness: {s.get('pnl_completeness', 'unknown')}")
+    if s.get('wallet_scan_truncated'):
+        lines.append(f"- Pending wallets not scanned: {', '.join('`'+w+'`' for w in s.get('wallets_pending', []))}")
     lines.append("")
     if s["migrations"]:
         lines.append("## Migration")
@@ -698,7 +719,7 @@ def write_wallet_markdown(report, out_md):
 
 
 def cmd_wallet_report(args):
-    report = build_wallet_report(args.address, limit=args.limit, source=args.history_source, max_pages=args.max_pages)
+    report = build_wallet_report(args.address, limit=args.limit, source=args.history_source, max_pages=args.max_pages, max_wallets=args.max_wallets)
     if args.out:
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as f:
@@ -718,6 +739,7 @@ def main():
     w.add_argument("--address", required=True)
     w.add_argument("--limit", type=int, default=100)
     w.add_argument("--max-pages", type=int, default=5, help="wallet-history pages to fetch per wallet via before cursor")
+    w.add_argument("--max-wallets", type=int, default=20, help="maximum wallet-cluster addresses to scan before marking the report partial")
     w.add_argument("--history-source", choices=["auto", "surf"], default="auto")
     w.add_argument("--out")
     w.add_argument("--out-md")

@@ -44,3 +44,8 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
 ## Caveat
 
 The default command uses recent wallet history by default. For exhaustive old history and very active wallets, connect an indexer or Etherscan/BscScan V2 API key and paginate completely.
+
+
+## Scan completeness
+
+Use `--max-wallets` to control cluster breadth. If `wallet_scan_truncated = true`, treat spend/income/net spend as partial until pending wallets are scanned.

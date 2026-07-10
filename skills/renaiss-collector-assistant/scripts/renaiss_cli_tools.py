@@ -22,6 +22,34 @@ def utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def normalize_cert(value):
+    text = str(value or "").upper().strip()
+    m = re.search(r"(?:PSA\s*)?(\d{4,})", text)
+    return f"PSA{m.group(1)}" if m else None
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def is_expired_ask(value, now=None):
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return False
+    return dt <= (now or datetime.now(timezone.utc))
+
+
 def parse_token_id(value: str) -> str | None:
     m = re.search(r"(\d{18,})", value or "")
     return m.group(1) if m else None
@@ -65,8 +93,12 @@ def serial_number(serial_raw):
     return int(m.group(1)) if m else None
 
 
-def run_json(cmd):
-    p = subprocess.run(cmd, text=True, capture_output=True)
+def run_json(cmd, timeout=None):
+    timeout = timeout or env_int("RENAISS_CLI_TIMEOUT", 180)
+    try:
+        p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}") from e
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or p.stdout.strip())
     return json.loads(p.stdout)
@@ -314,13 +346,27 @@ def normalize_detail(resp, collected_at):
     }
 
 
-def read_jsonl(path):
+def read_jsonl(path, tolerate_last_truncated=True):
     rows = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+    p = Path(path)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    for line_no, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            is_last = line_no == len(lines)
+            if tolerate_last_truncated and is_last:
+                print(json.dumps({
+                    "event": "jsonl_truncated_line_skipped",
+                    "path": str(path),
+                    "line": line_no,
+                    "error": str(e),
+                }, ensure_ascii=False), file=sys.stderr)
+                continue
+            raise ValueError(f"Invalid JSONL at {path}:{line_no}: {e}") from e
     return rows
 
 
@@ -358,13 +404,25 @@ def append_jsonl(path, rows):
 
 async def run_card_detail_batch(token_ids, concurrency, inter_request_delay, retries, timeout, method):
     sem = asyncio.Semaphore(concurrency)
+    rate_lock = asyncio.Lock()
+    last_request_at = 0.0
 
-    async def worker(idx, tid):
-        # Stagger launches. This is intentionally separate from concurrency: the endpoint tolerates
-        # low parallelism, but rapid bursts can trigger Forbidden responses.
-        if inter_request_delay and idx:
-            await asyncio.sleep(inter_request_delay * idx)
+    async def wait_for_rate_limit():
+        nonlocal last_request_at
+        if inter_request_delay <= 0:
+            return
+        async with rate_lock:
+            now = time.monotonic()
+            wait = inter_request_delay - (now - last_request_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_request_at = time.monotonic()
+
+    async def worker(_idx, tid):
         async with sem:
+            # This limiter runs immediately before the actual request, not before
+            # semaphore queueing, so request starts remain spaced even with concurrency > 1.
+            await wait_for_rate_limit()
             return await fetch_card_detail_with_retries(tid, retries=retries, timeout=timeout, method=method)
 
     return await asyncio.gather(*(worker(i, tid) for i, tid in enumerate(token_ids)))
@@ -561,7 +619,7 @@ INDEX_ARBITRAGE_FIELDNAMES = [
     "index_result_count", "index_price_usd", "index_price_net_usd", "index_spread_usdt",
     "index_spread_pct", "index_confidence", "index_last_sale_at", "index_href",
     "index_match_name", "index_match_grade", "index_match_company", "fee_rate",
-    "ranking_value", "risk_notes", "source",
+    "exact_cert_match", "index_response_cert", "ranking_value", "risk_notes", "source",
 ]
 
 
@@ -573,11 +631,39 @@ def write_csv(path, rows, fieldnames):
         w.writerows(rows)
 
 
-def build_sequential_candidates(rows):
+def append_csv_rows(path, rows, fieldnames):
+    if not rows:
+        return
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    needs_header = not p.exists() or p.stat().st_size == 0
+    with p.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        if needs_header:
+            w.writeheader()
+        w.writerows(rows)
+
+
+def read_csv_key_set(path, *fields):
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return set()
+    out = set()
+    with p.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            key = tuple(row.get(field) for field in fields)
+            if any(key):
+                out.add(key)
+    return out
+
+
+def build_sequential_candidates(rows, require_psa=True):
     by_serial = {}
     for r in rows:
         sn = r.get("serial_number")
         if sn is None:
+            continue
+        if require_psa and str(r.get("gradingCompany") or "").upper() != "PSA":
             continue
         by_serial.setdefault(int(sn), []).append(r)
     out_rows = []
@@ -606,7 +692,7 @@ def build_sequential_candidates(rows):
 
 def cmd_sequential_scan(args):
     rows = [r for r in read_jsonl(args.cards) if r.get("serial_number") is not None]
-    out_rows = build_sequential_candidates(rows)
+    out_rows = build_sequential_candidates(rows, require_psa=not args.allow_non_psa)
     write_csv(args.out, out_rows, SEQUENTIAL_FIELDNAMES)
     print(json.dumps({"out": args.out, "candidates": len(out_rows)}, ensure_ascii=False, indent=2))
 
@@ -616,6 +702,8 @@ def build_arbitrage_candidates(rows):
     for r in rows:
         ask = r.get("ask_usdt")
         if not ask or ask <= 0:
+            continue
+        if is_expired_ask(r.get("askExpiresAt")):
             continue
         top = r.get("top_offer_usdt")
         fmv = r.get("fmv_usd")
@@ -662,66 +750,114 @@ def index_credentials_available():
     return bool(os.getenv("RENAISS_INDEX_API_KEY") and os.getenv("RENAISS_INDEX_API_SECRET"))
 
 
-def renaiss_index_get(path, timeout=60):
+def renaiss_index_get(path, timeout=60, retries=2, retry_delay=1.0):
     base = os.getenv("RENAISS_INDEX_API_BASE", "https://api.renaissos.com").rstrip("/")
     headers = {"Accept": "application/json", "User-Agent": "RenaissCollectorAssistant/0.1"}
     if os.getenv("RENAISS_INDEX_API_KEY") and os.getenv("RENAISS_INDEX_API_SECRET"):
         headers["X-Api-Key"] = os.getenv("RENAISS_INDEX_API_KEY")
         headers["X-Api-Secret"] = os.getenv("RENAISS_INDEX_API_SECRET")
-    req = urllib.request.Request(base + path, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode()
-        payload = json.loads(raw) if raw else {}
-        return {"status": resp.status, "rate_limit_remaining": resp.headers.get("X-RateLimit-Remaining"), "data": payload}
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(base + path, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode()
+                payload = json.loads(raw) if raw else {}
+                return {"status": resp.status, "rate_limit_remaining": resp.headers.get("X-RateLimit-Remaining"), "data": payload}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:500] if hasattr(e, "read") else ""
+            last_error = RuntimeError(f"Renaiss OS Index API HTTP {e.code}: {body or e.reason}")
+            if e.code not in {429, 500, 502, 503, 504} or attempt >= retries:
+                raise last_error
+        except Exception as e:
+            last_error = e
+            if attempt >= retries:
+                raise
+        time.sleep(retry_delay * (2 ** attempt))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Renaiss OS Index API request failed")
 
 
-def search_index_by_serial(serial_raw, limit=3):
-    q = str(serial_raw or "").strip()
-    if not q:
-        return {"query": q, "results": []}
-    path = "/v1/search?" + urllib.parse.urlencode({"q": q, "limit": limit})
-    return renaiss_index_get(path)
+def graded_index_lookup(cert, *, retries=2):
+    normalized = normalize_cert(cert)
+    if not normalized:
+        return {"cert": cert, "normalized_cert": None, "found": False, "error": "invalid_cert"}
+    path = "/v1/graded/" + urllib.parse.quote(normalized)
+    response = renaiss_index_get(path, retries=retries)
+    data = response.get("data") or {}
+    response_cert = normalize_cert(data.get("cert") or data.get("certNumber") or ((data.get("collectible") or {}).get("cardIdentifier")))
+    exact = response_cert == normalized
+    return {
+        "query_cert": cert,
+        "normalized_cert": normalized,
+        "response_cert": response_cert,
+        "exact_cert_match": exact,
+        "found": bool(data.get("found")) and exact,
+        "data": data,
+        "rate_limit_remaining": response.get("rate_limit_remaining"),
+    }
 
 
-def result_grade_score(card, result):
-    score = 0
-    company = str(result.get("company") or "").lower()
-    grading = str(card.get("gradingCompany") or "").lower()
-    if grading and company and grading in company:
-        score += 3
-    grade = str(card.get("grade") or "").lower().replace("gem mint", "").strip()
-    grade_label = str(result.get("gradeLabel") or result.get("grade") or "").lower()
-    if grade and grade in grade_label:
-        score += 2
-    name = str(card.get("name") or card.get("pokemonName") or "").lower()
-    rname = str(result.get("name") or "").lower()
-    if name and rname and (name in rname or rname in name):
-        score += 1
-    return score
-
-
-def best_index_result(card, results):
-    if not results:
+def graded_price_candidate(card, lookup):
+    if not lookup.get("found") or not lookup.get("exact_cert_match"):
         return None
-    return sorted(results, key=lambda r: (result_grade_score(card, r), r.get("priceUsdCents") or 0), reverse=True)[0]
+    data = lookup.get("data") or {}
+    card_data = data.get("card") or {}
+    collectible = data.get("collectible") or {}
+    price_cents = card_data.get("priceUsdCents")
+    if price_cents is None:
+        return None
+    return {
+        "priceUsdCents": price_cents,
+        "confidence": card_data.get("confidence"),
+        "lastSaleAt": card_data.get("lastSaleAt"),
+        "href": card_data.get("href"),
+        "name": card_data.get("name"),
+        "gradeLabel": card_data.get("gradeLabel") or data.get("gradeLabel"),
+        "grade": card_data.get("grade") or data.get("grade"),
+        "company": card_data.get("company") or data.get("company") or collectible.get("gradingCompany"),
+        "cert": lookup.get("response_cert"),
+        "exact_cert_match": lookup.get("exact_cert_match"),
+    }
 
 
-def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, delay=0.25, max_cards=0):
+def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, delay=0.25, max_cards=0, retries=2, skip_keys=None):
+    """Build Index arbitrage candidates using exact /v1/graded/{cert} matching.
+
+    `search_limit` is kept for backward-compatible tests/CLI signatures, but exact
+    graded lookup is intentionally used to avoid matching the wrong card.
+    """
     out_rows = []
+    errors = []
     searched = 0
+    skip_keys = skip_keys or set()
     cards = rows[:max_cards] if max_cards else rows
     for r in cards:
         ask = r.get("ask_usdt")
         serial = r.get("serial_raw") or r.get("serial_number")
+        token_id = r.get("tokenId")
+        key = (str(token_id or ""), str(serial or ""))
+        if key in skip_keys:
+            continue
         if not ask or ask <= 0 or not serial:
             continue
+        if is_expired_ask(r.get("askExpiresAt")):
+            errors.append({"tokenId": token_id, "serial": serial, "error": "expired_ask_skipped"})
+            continue
         try:
-            response = search_index_by_serial(serial, limit=search_limit)
-            data = response.get("data") or {}
-            results = data.get("results") or []
+            lookup = graded_index_lookup(serial, retries=retries)
             searched += 1
-            best = best_index_result(r, results)
-            if not best or best.get("priceUsdCents") is None:
+            best = graded_price_candidate(r, lookup)
+            if not best:
+                errors.append({
+                    "tokenId": token_id,
+                    "serial": serial,
+                    "error": "no_exact_index_price",
+                    "found": lookup.get("found"),
+                    "exact_cert_match": lookup.get("exact_cert_match"),
+                    "response_cert": lookup.get("response_cert"),
+                })
                 continue
             price_usd = float(best.get("priceUsdCents")) / 100.0
             net = price_usd * (1 - FEE_RATE)
@@ -729,48 +865,63 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
             if spread < min_spread:
                 continue
             out_rows.append({
-                "tokenId": r.get("tokenId"), "name": r.get("name"),
+                "tokenId": token_id, "name": r.get("name"),
                 "serial_raw": r.get("serial_raw"), "serial_number": r.get("serial_number"),
-                "ask_usdt": ask, "index_query": str(serial),
-                "index_result_count": len(results), "index_price_usd": price_usd,
+                "ask_usdt": ask, "index_query": lookup.get("normalized_cert") or str(serial),
+                "index_result_count": 1, "index_price_usd": price_usd,
                 "index_price_net_usd": net, "index_spread_usdt": spread,
                 "index_spread_pct": spread / float(ask) if ask else None,
                 "index_confidence": best.get("confidence"),
                 "index_last_sale_at": best.get("lastSaleAt"), "index_href": best.get("href"),
                 "index_match_name": best.get("name"), "index_match_grade": best.get("gradeLabel") or best.get("grade"),
                 "index_match_company": best.get("company"), "fee_rate": FEE_RATE,
+                "exact_cert_match": best.get("exact_cert_match"),
+                "index_response_cert": best.get("cert"),
                 "ranking_value": spread,
-                "risk_notes": "Renaiss OS Index price is a benchmark, not executable liquidity; 2% seller fee included; refresh marketplace and index data before trading.",
-                "source": "Renaiss marketplace + Renaiss OS Index API",
+                "risk_notes": "Renaiss OS Index price is a benchmark, not executable liquidity; exact cert match required; 2% seller fee included; refresh marketplace and index data before trading.",
+                "source": "Renaiss marketplace + Renaiss OS Index API /v1/graded exact cert lookup",
             })
-        except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:300] if hasattr(e, "read") else ""
-            raise RuntimeError(f"Renaiss OS Index API HTTP {e.code}: {body or e.reason}")
+        except Exception as exc:
+            errors.append({"tokenId": token_id, "serial": serial, "error": str(exc), "error_type": type(exc).__name__})
         if delay:
             time.sleep(delay)
     out_rows.sort(key=lambda x: x.get("ranking_value") or 0, reverse=True)
-    return out_rows, searched
+    return out_rows, searched, errors
 
 
 def cmd_index_arbitrage_scan(args):
     if args.require_key and not index_credentials_available():
         raise SystemExit("Renaiss OS Index API key/secret required for index-arbitrage-scan. Fill .env or pass --allow-public-index for a tiny public-quota smoke test.")
     rows = read_jsonl(args.cards)
-    out_rows, searched = build_index_arbitrage_candidates(
+    errors_out = args.errors_out or (args.out + ".errors.jsonl")
+    skip_keys = read_csv_key_set(args.out, "tokenId", "serial_raw") if args.resume else set()
+    if not args.resume:
+        write_csv(args.out, [], INDEX_ARBITRAGE_FIELDNAMES)
+        Path(errors_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(errors_out).write_text("", encoding="utf-8")
+    out_rows, searched, errors = build_index_arbitrage_candidates(
         rows,
         search_limit=args.search_limit,
         min_spread=args.min_spread,
         delay=args.inter_request_delay,
         max_cards=args.max_cards,
+        retries=args.retries,
+        skip_keys=skip_keys,
     )
-    write_csv(args.out, out_rows, INDEX_ARBITRAGE_FIELDNAMES)
+    append_csv_rows(args.out, out_rows, INDEX_ARBITRAGE_FIELDNAMES)
+    if errors:
+        append_jsonl(errors_out, errors)
     print(json.dumps({
         "out": args.out,
+        "errors_out": errors_out,
         "cards_input": len(rows),
+        "cards_skipped_by_resume": len(skip_keys),
         "cards_searched": searched,
         "candidates": len(out_rows),
+        "errors": len(errors),
         "fee_rate": FEE_RATE,
         "requires_index_api_key": args.require_key,
+        "match_mode": "exact_/v1/graded_cert",
     }, ensure_ascii=False, indent=2))
 
 
@@ -850,7 +1001,7 @@ def main():
     d.add_argument("--no-resume", dest="resume", action="store_false", default=True)
     d.add_argument("--no-retry-errors", dest="retry_errors", action="store_false", default=True)
     d.set_defaults(func=cmd_card_details)
-    s = sub.add_parser("sequential-scan"); s.add_argument("--cards", required=True); s.add_argument("--out", required=True); s.set_defaults(func=cmd_sequential_scan)
+    s = sub.add_parser("sequential-scan"); s.add_argument("--cards", required=True); s.add_argument("--out", required=True); s.add_argument("--allow-non-psa", action="store_true", help="override PSA-only default for debugging/custom scans"); s.set_defaults(func=cmd_sequential_scan)
     a = sub.add_parser("arbitrage-scan"); a.add_argument("--cards", required=True); a.add_argument("--out", required=True); a.set_defaults(func=cmd_arbitrage_scan)
     ia = sub.add_parser("index-arbitrage-scan", help="Compare Renaiss marketplace ask with Renaiss OS Index benchmark price using attributes.Serial")
     ia.add_argument("--cards", required=True); ia.add_argument("--out", required=True)
@@ -858,6 +1009,9 @@ def main():
     ia.add_argument("--min-spread", type=float, default=0.0)
     ia.add_argument("--inter-request-delay", type=float, default=0.35)
     ia.add_argument("--max-cards", type=int, default=0, help="optional cap for smoke tests; 0 means all eligible cards")
+    ia.add_argument("--errors-out", help="JSONL file for per-card Index API errors/skips; default is OUT.errors.jsonl")
+    ia.add_argument("--resume", action="store_true", help="append to existing output and skip tokenId+serial pairs already present")
+    ia.add_argument("--retries", type=int, default=2, help="per-card Index API retry count for 429/5xx/network failures")
     ia.add_argument("--allow-public-index", dest="require_key", action="store_false", default=True, help="allow public 10/day Index API quota for tiny smoke tests")
     ia.set_defaults(func=cmd_index_arbitrage_scan)
     wl = sub.add_parser("watchlist-snapshot", help="Snapshot selected Renaiss cards for report-only watchlist monitoring")

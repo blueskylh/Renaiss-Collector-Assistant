@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.5`
+Version: `0.1.6`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -87,7 +87,7 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
   --out outputs/index_arbitrage_candidates.csv
 ```
 
-输出会包含 `index_price_usd`、`index_confidence`、`index_spread_usdt` 和 `risk_notes`。
+输出会包含 `index_price_usd`、`index_confidence`、`exact_cert_match`、`index_spread_usdt` 和 `risk_notes`。不能 exact cert match 或没有 Index 价格的行会写入 `outputs/index_arbitrage_candidates.csv.errors.jsonl`。
 
 卡牌 watchlist 快照：
 
@@ -117,7 +117,8 @@ Renaiss 钱包报告，自动识别并合并迁移前 / 迁移后钱包：
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address 0x032e4a8eb38843a65ce5e65131d1f99c10b03201 \
   --out outputs/wallet_report.json \
-  --out-md outputs/wallet_report.md
+  --out-md outputs/wallet_report.md \
+  --max-wallets 20
 ```
 
 `wallet-report` 会先查询输入地址的钱包历史，发现 `LegacyAssetMigrationHelper` 迁移交易后，把旧钱包和新钱包合并成 `wallet_cluster`，并排除迁移内部转账后统计 Renaiss NFT、SBT、Marketplace、Pack 和 USDT 流向。
