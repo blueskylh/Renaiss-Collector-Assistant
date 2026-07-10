@@ -1,135 +1,138 @@
-# Agent Install Guide - Renaiss Collector Assistant
+# Renaiss-Collector-Assistant skill 安装指南
 
-This file is for AI agents, automation runners, and developers who need to install or load the Renaiss Collector Assistant skill.
-
-## Skill location
-
-The skill lives under:
-
-```text
-skills/renaiss-collector-assistant/
-```
-
-The skill entry file is:
-
-```text
-skills/renaiss-collector-assistant/SKILL.md
-```
-
-Do not treat the repository root as the skill root. The repository root is for collector-facing documentation and future media assets.
+以下步骤面向 **AI Agent / 自动化 Runner / 开发者**。  
+目标是把本仓库中的 Renaiss Collector Assistant skill 安装到 agent 的 skills 目录中，并完成基本验证。
 
 ---
 
-## Install into an agent runtime
+## 环境要求
 
-### Option A: Copy the skill folder
+开始安装前，请确认环境里有：
 
-Copy this folder into the agent's skill directory:
+### 1. Node.js
 
-```text
-skills/renaiss-collector-assistant/
-```
-
-The final installed structure should look like:
-
-```text
-<agent-skills-dir>/renaiss-collector-assistant/SKILL.md
-<agent-skills-dir>/renaiss-collector-assistant/scripts/
-<agent-skills-dir>/renaiss-collector-assistant/docs/
-<agent-skills-dir>/renaiss-collector-assistant/workflows/
-<agent-skills-dir>/renaiss-collector-assistant/assets/renaisslogo.jpg
-```
-
-### Option B: Symlink during development
-
-```bash
-ln -s /path/to/Renaiss-Collector-Assistant/skills/renaiss-collector-assistant \
-  <agent-skills-dir>/renaiss-collector-assistant
-```
-
----
-
-## Runtime prerequisites
-
-### Node.js
-
-Renaiss CLI requires Node.js `>=22.0.0`.
+Renaiss CLI 需要 **Node.js >= 22.0.0**。
 
 ```bash
 node --version
 npm --version
-npx --yes renaiss --help
 ```
 
-### Python
+如果 Node.js 低于 22，请先升级 Node.js。
 
-The helper scripts use Python 3 and standard-library modules.
+### 2. Python 3
+
+辅助脚本使用 Python 3 和标准库模块。
 
 ```bash
 python3 --version
 ```
 
-### Renaiss CLI
+### 3. Renaiss CLI
 
-Use:
+先检查 Renaiss CLI 是否可运行：
 
 ```bash
 npx --yes renaiss --help
 ```
 
-Do not point Renaiss CLI at the Index API host. Renaiss CLI uses `https://api.renaiss.xyz` and `/v0/...` routes by default.
+如果这条命令可以输出帮助信息，就说明 CLI 可用。  
+如果不可用，请先确认 Node.js / npm 环境正常。
 
 ---
 
-## Environment configuration
+## 第 1 步：下载 skill
 
-Copy the example config if running scripts directly:
+如果 agent 可以访问 GitHub 仓库：
 
 ```bash
-cd skills/renaiss-collector-assistant
+git clone https://github.com/blueskylh/Renaiss-Collector-Assistant.git
+cd Renaiss-Collector-Assistant
+```
+
+如果仓库是 private，请使用已授权的 GitHub 凭据、SSH key 或由用户提供的代码包。
+
+---
+
+## 第 2 步：把 skill 放到 agent 的 skills 目录
+
+本仓库里的 skill 目录是：
+
+```text
+skills/renaiss-collector-assistant/
+```
+
+把这个文件夹复制到 agent 的 skills 目录中。
+
+通用示例：
+
+```bash
+cp -R skills/renaiss-collector-assistant <AGENT_SKILLS_DIR>/renaiss-collector-assistant
+```
+
+如果是开发环境，也可以使用软链接：
+
+```bash
+ln -s $(pwd)/skills/renaiss-collector-assistant \
+  <AGENT_SKILLS_DIR>/renaiss-collector-assistant
+```
+
+安装后应看到：
+
+```text
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/SKILL.md
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/scripts/
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/docs/
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/workflows/
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/assets/renaisslogo.jpg
+```
+
+---
+
+## 第 3 步：配置环境变量
+
+进入 skill 目录：
+
+```bash
+cd <AGENT_SKILLS_DIR>/renaiss-collector-assistant
 cp config.example.env .env
 ```
 
-Important variables:
+如果用户有 Renaiss OS Index API key，可以填入：
 
 ```env
-RENAISS_INDEX_API_BASE=https://api.renaissos.com
 RENAISS_INDEX_API_KEY=
 RENAISS_INDEX_API_SECRET=
-BSC_RPC_URL_1=https://bsc-dataseed.binance.org/
 ```
 
-Security rules:
+如果没有 key，也可以先使用公开访问，但公开访问有请求限制。
 
-- Never commit `.env`.
-- Never print or store `RENAISS_INDEX_API_SECRET` in reports.
-- Use `config.example.env` only as a template.
+不要把 `.env` 上传到 GitHub。不要在报告里输出 API Secret。
 
 ---
 
-## Smoke tests
+## 第 4 步：验证安装
 
-Run from the skill folder:
+### 检查基础环境
 
 ```bash
-cd skills/renaiss-collector-assistant
 bash scripts/install_check.sh
 ```
 
-Check tokenId parsing:
+### 检查 tokenId 解析
 
 ```bash
 python3 scripts/renaiss_cli_tools.py extract-token-id \
   https://www.renaiss.xyz/card/52287817309214025553881867171377810568280888389927364298190829769750135390511
 ```
 
-Check packs:
+### 检查 Renaiss packs
 
 ```bash
 npx --yes renaiss packs --json
 ```
 
-Check wallet report:
+### 检查钱包报告
 
 ```bash
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
@@ -138,36 +141,46 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --out-md outputs/wallet_report.md
 ```
 
----
-
-## Agent behavior rules
-
-When this skill is active, the agent should follow these rules:
-
-1. **Wallets:** always analyze Renaiss wallets as a `wallet_cluster`, not a single address, because users may have legacy and current wallets after migration.
-2. **Migration:** exclude `LegacyAssetMigrationHelper` internal transfers from PnL / net spend.
-3. **SBT:** show SBT names, not IDs only. Resolve ERC-1155 `uri(id)` and fetch metadata JSON.
-4. **Sequential Cert:** use `attributes.Serial` / PSA cert number, not `cardNumber`.
-5. **Sequential scan:** PSA-only by default.
-6. **Arbitrage scan:** do not restrict to PSA unless the user explicitly asks. Scan all listed cards.
-7. **Card details:** for <=10 cards, CLI is fine; for >10 cards, prefer direct API URL with safe batching.
-8. **Rate limits:** if card API returns 429/403, cool down; do not immediately switch to CLI because both share the same backend/WAF.
-9. **Buying candidates:** tell users to search `attributes.Serial` / PSA cert or card detail on `https://www.renaiss.xyz/`.
-10. **Reports:** include timestamps, source labels, field meanings, and risk notes.
+如果能生成 JSON 和 Markdown 报告，说明 wallet 模块可用。
 
 ---
 
-## Useful commands
+## 第 5 步：让 Agent 读取 skill 规则
 
-### Marketplace snapshot
+Agent 应读取这个文件作为主规则：
 
-```bash
-python3 scripts/renaiss_cli_tools.py marketplace-snapshot \
-  --listed \
-  --out data/marketplace_all_listed.jsonl
+```text
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/SKILL.md
 ```
 
-### PSA Sequential Cert scan
+并把以下目录作为辅助资料：
+
+```text
+docs/
+workflows/
+scripts/
+```
+
+---
+
+## Agent 必须遵守的行为规则
+
+1. **钱包分析必须合并迁移前后钱包**，使用 `wallet_cluster`，不要只看单地址。
+2. **迁移交易不计入 PnL**，只作为内部资产迁移。
+3. **SBT 要显示名称**，不能只显示 SBT ID。
+4. **Sequential Cert 使用 `attributes.Serial` / PSA cert**，不能用 `cardNumber`。
+5. **Sequential Cert 默认只查 PSA**。
+6. **套利扫描默认查所有 listed cards**，不要限制为 PSA。
+7. **少量 card detail 查询可以用 CLI**，10 张以上优先用 API URL + 限速批量查询。
+8. **API 出现 429 / 403 时必须冷却**，不要马上切 CLI，因为 CLI 和 API 共用后端限流。
+9. **用户想购买连号或套利卡牌时**，提示用户用 `attributes.Serial` / PSA cert 或卡牌信息到 `https://www.renaiss.xyz/` 搜索。
+10. **报告必须写清楚数据来源、时间、字段含义和风险提示。**
+
+---
+
+## 常用验证命令
+
+### PSA 连号扫描
 
 ```bash
 python3 scripts/renaiss_cli_tools.py marketplace-snapshot \
@@ -180,7 +193,7 @@ python3 scripts/renaiss_cli_tools.py sequential-scan \
   --out outputs/sequential_candidates.csv
 ```
 
-### Arbitrage scan
+### 套利扫描
 
 ```bash
 python3 scripts/renaiss_cli_tools.py marketplace-snapshot \
@@ -196,7 +209,7 @@ python3 scripts/renaiss_cli_tools.py arbitrage-scan \
   --out outputs/arbitrage_candidates.csv
 ```
 
-### Pack monitor source
+### Pack 监控数据源
 
 ```bash
 npx --yes renaiss packs --json
@@ -207,13 +220,25 @@ npx --yes renaiss packs eden-pack --json
 
 ---
 
-## Expected output files
+## 输出目录
 
-Runtime output should go under local ignored folders, not into git:
+运行时产生的数据建议放在：
 
 ```text
 data/
 outputs/
 ```
 
-These folders are ignored by the root `.gitignore`.
+这两个目录已被 `.gitignore` 忽略，不应提交到仓库。
+
+---
+
+## 安装完成判断
+
+满足以下条件即可认为安装成功：
+
+- Agent 能读取 `SKILL.md`；
+- `npx --yes renaiss --help` 正常；
+- `python3 scripts/renaiss_cli_tools.py extract-token-id ...` 正常；
+- `npx --yes renaiss packs --json` 正常；
+- `wallet-report` 能生成 JSON / Markdown 报告。
