@@ -50,7 +50,6 @@ git clone https://github.com/blueskylh/Renaiss-Collector-Assistant.git
 cd Renaiss-Collector-Assistant
 ```
 
-如果仓库是 private，请使用已授权的 GitHub 凭据、SSH key 或由用户提供的代码包。
 
 ---
 
@@ -98,16 +97,36 @@ cd <AGENT_SKILLS_DIR>/renaiss-collector-assistant
 cp config.example.env .env
 ```
 
-如果用户有 Renaiss OS Index API key，可以填入：
+Agent 需要先询问用户：
+
+```text
+你是否有 Renaiss OS Index API key / secret？
+```
+
+### 如果用户没有 API key
+
+请提示用户可以去这里申请：
+
+```text
+https://index.renaissos.com/partners
+```
+
+没有 key 也可以先使用公开访问，但公开访问有请求限制。
+
+### 如果用户有 API key
+
+引导用户把 key 和 secret 写入 `.env`，或通过当前运行环境的安全 secret 管理方式注入：
 
 ```env
 RENAISS_INDEX_API_KEY=
 RENAISS_INDEX_API_SECRET=
 ```
 
-如果没有 key，也可以先使用公开访问，但公开访问有请求限制。
+安全要求：
 
-不要把 `.env` 上传到 GitHub。不要在报告里输出 API Secret。
+- 不要把 `.env` 上传到 GitHub。
+- 不要在报告里输出 API Secret。
+- 不要把 API Secret 写入 Markdown、CSV、JSON 报告或截图。
 
 ---
 
