@@ -235,10 +235,55 @@ def surf_json(args, timeout=120):
     return json.loads(p.stdout)
 
 
-def fetch_wallet_history(address, limit=100, source="auto"):
+def fetch_wallet_history(address, limit=100, source="auto", max_pages=5):
+    """Fetch paginated BSC wallet history.
+
+    Surf wallet-history is cursor-paginated through `--before`. A single page is
+    not enough for active Renaiss collectors, so wallet reports page by default
+    and de-duplicate by tx_hash.
+    """
     if source in ("auto", "surf") and is_surf_available():
-        j = surf_json(["surf", "wallet-history", "--address", address, "--chain", "bsc", "--limit", str(limit), "--include", "labels", "--json"])
-        return {"source": "surf_wallet_history", "data": j.get("data") or [], "meta": j.get("meta") or {}, "error": j.get("error")}
+        all_rows = []
+        seen_hashes = set()
+        metas = []
+        before = None
+        last_error = None
+        for page in range(max(1, max_pages)):
+            cmd = ["surf", "wallet-history", "--address", address, "--chain", "bsc", "--limit", str(limit), "--include", "labels", "--json"]
+            if before is not None:
+                cmd += ["--before", str(before)]
+            j = surf_json(cmd)
+            last_error = j.get("error")
+            meta = j.get("meta") or {}
+            meta["page"] = page + 1
+            meta["before"] = before
+            metas.append(meta)
+            data = j.get("data") or []
+            if not data:
+                break
+            for row in data:
+                h = row.get("tx_hash")
+                if h and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    all_rows.append(row)
+            if not meta.get("has_more"):
+                break
+            timestamps = [int(r.get("timestamp")) for r in data if r.get("timestamp") is not None]
+            if not timestamps:
+                break
+            before = min(timestamps) + 1
+        return {
+            "source": "surf_wallet_history",
+            "data": all_rows,
+            "meta": {
+                "pages_fetched": len(metas),
+                "limit_per_page": limit,
+                "rows": len(all_rows),
+                "has_more_last": metas[-1].get("has_more") if metas else None,
+                "pages": metas,
+            },
+            "error": last_error,
+        }
     raise RuntimeError("No wallet-history source available. Install Surf CLI or add Etherscan V2/BscScan API support.")
 
 
@@ -431,12 +476,12 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
         "data_notes": [
             "Wallet cluster is inferred from LegacyAssetMigrationHelper migration transactions.",
             "Migration transfers inside the cluster are excluded from net USDT flow.",
-            "History source is recent wallet-history; for exhaustive old history use an indexer/BscScan V2 key and paginate fully.",
+            "Wallet history is paginated with --before; very active wallets may still need a higher --max-pages or a dedicated indexer/BscScan V2 export.",
         ],
     }
 
 
-def build_wallet_report(address, limit=100, source="auto"):
+def build_wallet_report(address, limit=100, source="auto", max_pages=5):
     address = address.lower()
     history_by_wallet = {}
     wallet_details = {}
@@ -448,7 +493,7 @@ def build_wallet_report(address, limit=100, source="auto"):
         if w in seen_wallets:
             continue
         seen_wallets.add(w)
-        hist = fetch_wallet_history(w, limit=limit, source=source)
+        hist = fetch_wallet_history(w, limit=limit, source=source, max_pages=max_pages)
         history_by_wallet[w] = hist
         wallet_details[w] = fetch_wallet_detail(w, source=source)
         tx_hashes = []
@@ -549,7 +594,7 @@ def write_wallet_markdown(report, out_md):
 
 
 def cmd_wallet_report(args):
-    report = build_wallet_report(args.address, limit=args.limit, source=args.history_source)
+    report = build_wallet_report(args.address, limit=args.limit, source=args.history_source, max_pages=args.max_pages)
     if args.out:
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as f:
@@ -568,6 +613,7 @@ def main():
     w = sub.add_parser("wallet-report")
     w.add_argument("--address", required=True)
     w.add_argument("--limit", type=int, default=100)
+    w.add_argument("--max-pages", type=int, default=5, help="wallet-history pages to fetch per wallet via before cursor")
     w.add_argument("--history-source", choices=["auto", "surf"], default="auto")
     w.add_argument("--out")
     w.add_argument("--out-md")

@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.3`
+Version: `0.1.4`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 

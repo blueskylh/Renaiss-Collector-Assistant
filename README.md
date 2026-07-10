@@ -4,7 +4,7 @@
 
 ### A collector-first AI skill for Renaiss cards, wallets, packs, SBTs, and market opportunities.
 
-![Version](https://img.shields.io/badge/version-v0.1.3-black?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-v0.1.4-black?style=for-the-badge)
 ![Renaiss](https://img.shields.io/badge/Renaiss-Collector%20Assistant-6C5CE7?style=for-the-badge)
 ![Multi Agent](https://img.shields.io/badge/Multi--Agent-Ready-00B894?style=for-the-badge)
 ![BSC](https://img.shields.io/badge/BSC-On--Chain-F0B90B?style=for-the-badge)
