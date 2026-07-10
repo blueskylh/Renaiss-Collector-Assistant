@@ -1,11 +1,13 @@
 {
   "name": "renaiss-collector-assistant",
   "display_name": "Renaiss Collector Assistant",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "language": "zh-CN",
   "description": "Agent skill for Renaiss CLI, Renaiss OS Index API, BSC wallet analysis, sequential PSA cert discovery, arbitrage scanning, monitoring, and Renaiss Artist image workflows.",
   "entry": "SKILL.md",
-  "assets": ["assets/renaisslogo.jpg"],
+  "assets": [
+    "assets/renaisslogo.jpg"
+  ],
   "scripts": [
     "scripts/renaiss_cli_tools.py",
     "scripts/renaiss_index_api.py",

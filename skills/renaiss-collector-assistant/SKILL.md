@@ -41,12 +41,18 @@ npm --version
 
 If Node is older than 22, tell the user to upgrade Node before using the CLI modules.
 
+Python helper scripts require Python `>=3.11`.
+
+```bash
+python3 --version
+```
+
 ### 2. Install or run Renaiss CLI
 
 Use either:
 
 ```bash
-npx renaiss --help
+npx --yes renaiss --help
 ```
 
 or:
@@ -66,11 +72,16 @@ Renaiss Index API base URL:
 https://api.renaissos.com
 ```
 
-Use environment variables:
+Use environment variables or a `.env` file in the skill directory/current working directory/repo root. The scripts auto-load `.env` through a stdlib loader:
 
 ```bash
 export RENAISS_INDEX_API_KEY="rk_..."
 export RENAISS_INDEX_API_SECRET="rsk_..."
+```
+
+```env
+RENAISS_INDEX_API_KEY=
+RENAISS_INDEX_API_SECRET=
 ```
 
 If the user has no key, tell them:
@@ -111,6 +122,7 @@ RENAISS_LEGACY_MIGRATION_HELPER=0x2e737d552b3c601ada4fcd167bfbd8d4e1043b2c
 RENAISS_PACK_CONTRACT_CURRENT=0x94e7732b0b2e7c51ffd0d56580067d9c2e2b7910
 RENAISS_PACK_CONTRACT_LEGACY_150=0xfda4a907d23d9f24271bc47483c5b983831e325e
 RENAISS_PACK_OR_BUYBACK_LEGACY_88=0xb2891022648c5fad3721c42c05d8d283d4d53080
+RENAISS_PACK_SETTLEMENT_CONTRACT=0xaab5f5fa75437a6e9e7004c12c9c56cda4b4885a
 RENAISS_MARKETPLACE_PROXY=0xae3e7268ef5a062946216a44f58a8f685ffd11d0
 BSC_ERC4337_ENTRYPOINT=0x0000000071727de22e5e9d8baf0edac6f37da032
 ```
@@ -210,7 +222,7 @@ Process:
 2. Use `attributes.Serial` directly from the Marketplace response when present. Marketplace rows include `attributes`, so most Sequential Cert scans do **not** need per-card `renaiss card <tokenId>` calls.
 3. Call `renaiss card <tokenId> --json` only as a fallback if a marketplace row is missing `attributes.Serial` or if the user asks for richer card detail.
 4. Parse serial values like `PSA127320817` into `serial_number = 127320817`.
-5. Sort by `serial_number` and find pairs where `abs(a - b) = 1`.
+5. Group by `serial_number`; for every `serial + 1` group, generate valid pairs across both groups so duplicate serial listings do not get dropped.
 6. Do **not** require same card.
 7. Do **not** require PSA 10.
 8. Mark special relation tags rather than filtering them out.
@@ -316,6 +328,25 @@ net_fmv_spread_pct = net_fmv_spread / ask_usdt
 ```
 
 Assume `1 USDT ≈ 1 USD`, but state that FMV is not an executable bid.
+
+
+### Renaiss OS Index price arbitrage mode
+
+Use this mode only when the user has Renaiss OS Index API key/secret. Public quota is only **10 requests/day/IP**, which is not enough for scanning many cards.
+
+```bash
+python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
+  --cards data/marketplace_all_listed.jsonl \
+  --out outputs/index_arbitrage_candidates.csv
+```
+
+Rules:
+
+- Use the marketplace card's `attributes.Serial` as the Index API search query.
+- Compare Renaiss OS Index benchmark price with Renaiss marketplace ask.
+- Deduct 2% seller fee from the benchmark sell side.
+- Output `index_confidence` so users can see whether the benchmark is high/low confidence.
+- Explain that Index price is not executable liquidity.
 
 Mandatory risk notes:
 
@@ -480,4 +511,27 @@ Before responding to the user, verify:
 - For wallet analysis, did you merge legacy and current wallets and exclude migration from PnL?
 - For SBT, did you account for ERC-1155 `TransferBatch`?
 - For slow `renaiss card` calls, did you use bounded concurrency or explain the runtime?
+- For Index API arbitrage, did you require/confirm API key for batch runs and show `index_confidence`?
 - Did you save raw data when running sequential or arbitrage scans?
+
+
+## Card Watchlist Monitor
+
+Use report-only watchlists for specific cards. Do not assume Telegram/Discord/Email integrations.
+
+```bash
+python3 scripts/renaiss_cli_tools.py watchlist-snapshot \
+  --watchlist data/watchlist.txt \
+  --out outputs/watchlist_snapshot.jsonl
+```
+
+Monitor ask price, FMV, top offer, last sale, owner, listing expiry, and vault/ownership fields over time.
+
+
+## Pack units
+
+For `npx --yes renaiss packs --json`, interpret pack units carefully:
+
+- `priceInUsdt` is raw 18-decimal USDT base units: `price_usdt = priceInUsdt / 1e18`.
+- `expectedValueInUsd`, `featuredCardFmvInUsd`, and recent-open `fmv` are USD cents: divide by `100`.
+- If the Renaiss CLI changes these raw units, ask for clarification before publishing reports.

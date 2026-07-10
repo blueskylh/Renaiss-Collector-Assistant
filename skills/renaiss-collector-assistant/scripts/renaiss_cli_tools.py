@@ -4,9 +4,15 @@
 Requires Node.js >=22 and Renaiss CLI via `npx --yes renaiss`.
 Uses only Python stdlib.
 """
-import argparse, asyncio, csv, json, os, re, subprocess, sys, time, urllib.request, urllib.error
+import argparse, asyncio, csv, json, os, re, subprocess, sys, time, urllib.parse, urllib.request, urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from common_env import load_dotenv_files
+    load_dotenv_files()
+except Exception:
+    pass
 
 FEE_RATE = float(os.getenv("RENAISS_SELLER_FEE_RATE", "0.02"))
 CARD_URL_PREFIX = "https://www.renaiss.xyz/card/"
@@ -16,11 +22,9 @@ def utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def parse_token_id(value: str) -> str:
+def parse_token_id(value: str) -> str | None:
     m = re.search(r"(\d{18,})", value or "")
-    if not m:
-        raise SystemExit("No decimal tokenId found.")
-    return m.group(1)
+    return m.group(1) if m else None
 
 
 def usdt_wei_to_float(v):
@@ -111,7 +115,10 @@ def cmd_check(_):
 
 
 def cmd_extract_token(args):
-    print(parse_token_id(args.value))
+    token_id = parse_token_id(args.value)
+    if not token_id:
+        raise SystemExit("No decimal tokenId found.")
+    print(token_id)
 
 
 def cmd_marketplace_snapshot(args):
@@ -213,7 +220,16 @@ async def fetch_card_detail_once(token_id, timeout=120, method="cli"):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            return {"error": f"timeout after {timeout}s", "error_status": "timeout", "tokenId": token_id, "latency_s": time.perf_counter() - t0, "started_at_utc": started, "method": "cli"}
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.communicate()
+            raise
         latency = time.perf_counter() - t0
         out = stdout.decode(errors="replace")
         err = stderr.decode(errors="replace")
@@ -227,8 +243,6 @@ async def fetch_card_detail_once(token_id, timeout=120, method="cli"):
                 return {"error": msg, "error_status": "json_error", "tokenId": token_id, "latency_s": latency, "started_at_utc": started, "method": "cli"}
         msg = err or out or f"renaiss card exited with {proc.returncode}"
         return {"error": msg, "error_status": classify_card_detail_error(msg), "tokenId": token_id, "latency_s": latency, "started_at_utc": started, "method": "cli"}
-    except asyncio.TimeoutError:
-        return {"error": f"timeout after {timeout}s", "error_status": "timeout", "tokenId": token_id, "latency_s": time.perf_counter() - t0, "started_at_utc": started, "method": "cli"}
     except Exception as e:
         msg = str(e)
         return {"error": msg, "error_status": classify_card_detail_error(msg), "tokenId": token_id, "latency_s": time.perf_counter() - t0, "started_at_utc": started, "method": "cli"}
@@ -263,9 +277,11 @@ def normalize_detail(resp, collected_at):
     top_offer = pricing.get("top_offer") or {}
     last_sale = pricing.get("last_sale") or {}
     price = pricing.get("price") or {}
+    method = (resp.get("_fetch_meta") or {}).get("method") or resp.get("method")
     return {
         "collected_at_utc": collected_at,
-        "source": "Renaiss CLI",
+        "source": "Renaiss Card API" if method == "api" else "Renaiss CLI",
+        "request_method": method,
         "tokenId": token_id,
         "card_url": CARD_URL_PREFIX + str(token_id) if token_id else None,
         "name": c.get("name"),
@@ -358,10 +374,13 @@ def cmd_card_details(args):
     rows = read_jsonl(args.input)
     token_ids = []
     seen = set()
-    for r in rows:
+    skipped_rows = []
+    for idx, r in enumerate(rows):
         tid = r.get("tokenId") or parse_token_id(str(r.get("card_url", "")))
         if tid and str(tid) not in seen:
             seen.add(str(tid)); token_ids.append(str(tid))
+        elif not tid:
+            skipped_rows.append({"row_index": idx, "error": "missing_or_invalid_token_id", "row": r})
     if args.limit:
         token_ids = token_ids[:args.limit]
 
@@ -402,6 +421,7 @@ def cmd_card_details(args):
         "out": args.out,
         "input_rows": len(rows),
         "unique_token_ids": len(token_ids),
+        "skipped_input_rows": len(skipped_rows),
         "resume": args.resume,
         "retry_errors": args.retry_errors,
         "already_completed": len(completed),
@@ -444,7 +464,8 @@ def cmd_card_details(args):
                 rate_limit_count += 1 if status == "rate_limit" else 0
                 timeout_count += 1 if status == "timeout" else 0
                 normalized.append({
-                    "source": "Renaiss CLI",
+                    "source": "Renaiss Card API" if r.get("method") == "api" else "Renaiss CLI",
+                    "request_method": r.get("method"),
                     "tokenId": r.get("tokenId"),
                     "error": r.get("error"),
                     "error_status": status,
@@ -520,37 +541,77 @@ def relation_tags(a, b):
     return tags
 
 
+
+SEQUENTIAL_FIELDNAMES = [
+    "serial_a", "serial_b", "serial_number_a", "serial_number_b", "serial_gap",
+    "tokenId_a", "tokenId_b", "name_a", "name_b", "setName_a", "setName_b",
+    "grade_a", "grade_b", "ask_total_usdt", "fmv_total_usd", "special_tags",
+    "candidate_strength", "risk_note", "source",
+]
+
+ARBITRAGE_FIELDNAMES = [
+    "tokenId", "name", "ask_usdt", "top_offer_usdt", "top_offer_net_usdt",
+    "direct_arbitrage_profit", "direct_arbitrage_profit_pct", "fmv_usd", "fmv_net_usd",
+    "fmv_spread_net", "fmv_spread_pct", "last_sale_usdt", "fee_rate",
+    "opportunity_type", "ranking_value", "risk_notes", "source",
+]
+
+INDEX_ARBITRAGE_FIELDNAMES = [
+    "tokenId", "name", "serial_raw", "serial_number", "ask_usdt", "index_query",
+    "index_result_count", "index_price_usd", "index_price_net_usd", "index_spread_usdt",
+    "index_spread_pct", "index_confidence", "index_last_sale_at", "index_href",
+    "index_match_name", "index_match_grade", "index_match_company", "fee_rate",
+    "ranking_value", "risk_notes", "source",
+]
+
+
+def write_csv(path, rows, fieldnames):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def build_sequential_candidates(rows):
+    by_serial = {}
+    for r in rows:
+        sn = r.get("serial_number")
+        if sn is None:
+            continue
+        by_serial.setdefault(int(sn), []).append(r)
+    out_rows = []
+    for sn in sorted(by_serial):
+        if sn + 1 not in by_serial:
+            continue
+        for a in by_serial[sn]:
+            for b in by_serial[sn + 1]:
+                tags = relation_tags(a, b)
+                strength = "strong" if len(tags) >= 3 else "medium" if tags else "weak"
+                out_rows.append({
+                    "serial_a": a.get("serial_raw"), "serial_b": b.get("serial_raw"),
+                    "serial_number_a": sn, "serial_number_b": sn + 1, "serial_gap": 1,
+                    "tokenId_a": a.get("tokenId"), "tokenId_b": b.get("tokenId"),
+                    "name_a": a.get("name"), "name_b": b.get("name"),
+                    "setName_a": a.get("setName"), "setName_b": b.get("setName"),
+                    "grade_a": a.get("grade"), "grade_b": b.get("grade"),
+                    "ask_total_usdt": (a.get("ask_usdt") or 0) + (b.get("ask_usdt") or 0),
+                    "fmv_total_usd": (a.get("fmv_usd") or 0) + (b.get("fmv_usd") or 0),
+                    "special_tags": ";".join(tags), "candidate_strength": strength,
+                    "risk_note": "Sequential Cert SBT 最终是否有效，需要 Renaiss team 验证。",
+                    "source": "Renaiss CLI marketplace attributes.Serial",
+                })
+    return out_rows
+
+
 def cmd_sequential_scan(args):
     rows = [r for r in read_jsonl(args.cards) if r.get("serial_number") is not None]
-    rows.sort(key=lambda r: r["serial_number"])
-    out_rows = []
-    for a, b in zip(rows, rows[1:]):
-        gap = abs(int(a["serial_number"]) - int(b["serial_number"]))
-        if gap == 1:
-            tags = relation_tags(a, b)
-            strength = "strong" if len(tags) >= 3 else "medium" if tags else "weak"
-            out_rows.append({
-                "serial_a": a.get("serial_raw"), "serial_b": b.get("serial_raw"), "serial_gap": gap,
-                "tokenId_a": a.get("tokenId"), "tokenId_b": b.get("tokenId"),
-                "name_a": a.get("name"), "name_b": b.get("name"),
-                "setName_a": a.get("setName"), "setName_b": b.get("setName"),
-                "grade_a": a.get("grade"), "grade_b": b.get("grade"),
-                "ask_total_usdt": (a.get("ask_usdt") or 0) + (b.get("ask_usdt") or 0),
-                "fmv_total_usd": (a.get("fmv_usd") or 0) + (b.get("fmv_usd") or 0),
-                "special_tags": ";".join(tags), "candidate_strength": strength,
-                "risk_note": "Sequential Cert SBT 最终是否有效，需要 Renaiss team 验证。",
-                "source": "Renaiss CLI",
-            })
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
-        if out_rows:
-            w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
-            w.writeheader(); w.writerows(out_rows)
+    out_rows = build_sequential_candidates(rows)
+    write_csv(args.out, out_rows, SEQUENTIAL_FIELDNAMES)
     print(json.dumps({"out": args.out, "candidates": len(out_rows)}, ensure_ascii=False, indent=2))
 
 
-def cmd_arbitrage_scan(args):
-    rows = read_jsonl(args.cards)
+def build_arbitrage_candidates(rows):
     out_rows = []
     for r in rows:
         ask = r.get("ask_usdt")
@@ -562,27 +623,207 @@ def cmd_arbitrage_scan(args):
         direct_profit = net_offer - ask if net_offer is not None else None
         fmv_net = fmv * (1 - FEE_RATE) if fmv else None
         fmv_spread = fmv_net - ask if fmv_net is not None else None
-        if (direct_profit is not None and direct_profit > 0) or (fmv_spread is not None and fmv_spread > 0):
-            out_rows.append({
-                "tokenId": r.get("tokenId"), "name": r.get("name"), "ask_usdt": ask,
-                "top_offer_usdt": top, "top_offer_net_usdt": net_offer,
-                "direct_arbitrage_profit": direct_profit,
-                "direct_arbitrage_profit_pct": (direct_profit / ask) if direct_profit is not None else None,
-                "fmv_usd": fmv, "fmv_net_usd": fmv_net,
-                "fmv_spread_net": fmv_spread,
-                "fmv_spread_pct": (fmv_spread / ask) if fmv_spread is not None else None,
-                "last_sale_usdt": r.get("last_sale_usdt"), "fee_rate": FEE_RATE,
-                "risk_notes": "2% seller fee included; top offer may expire or have unknown acceptance conditions; FMV is not executable liquidity; refresh data before trading.",
-                "source": "Renaiss CLI",
-            })
-    out_rows.sort(key=lambda x: (x.get("direct_arbitrage_profit") or x.get("fmv_spread_net") or 0), reverse=True)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
-        if out_rows:
-            w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
-            w.writeheader(); w.writerows(out_rows)
+        positive_direct = direct_profit if direct_profit is not None and direct_profit > 0 else None
+        positive_fmv = fmv_spread if fmv_spread is not None and fmv_spread > 0 else None
+        if positive_direct is None and positive_fmv is None:
+            continue
+        if positive_direct is not None and (positive_fmv is None or positive_direct >= positive_fmv):
+            opportunity_type = "top_offer_arbitrage"
+            ranking_value = positive_direct
+        else:
+            opportunity_type = "fmv_discount"
+            ranking_value = positive_fmv
+        out_rows.append({
+            "tokenId": r.get("tokenId"), "name": r.get("name"), "ask_usdt": ask,
+            "top_offer_usdt": top, "top_offer_net_usdt": net_offer,
+            "direct_arbitrage_profit": direct_profit,
+            "direct_arbitrage_profit_pct": (direct_profit / ask) if direct_profit is not None else None,
+            "fmv_usd": fmv, "fmv_net_usd": fmv_net,
+            "fmv_spread_net": fmv_spread,
+            "fmv_spread_pct": (fmv_spread / ask) if fmv_spread is not None else None,
+            "last_sale_usdt": r.get("last_sale_usdt"), "fee_rate": FEE_RATE,
+            "opportunity_type": opportunity_type,
+            "ranking_value": ranking_value,
+            "risk_notes": "2% seller fee included; top offer may expire or have unknown acceptance conditions; FMV is not executable liquidity; refresh data before trading.",
+            "source": r.get("source") or "Renaiss CLI",
+        })
+    out_rows.sort(key=lambda x: x.get("ranking_value") or 0, reverse=True)
+    return out_rows
+
+
+def cmd_arbitrage_scan(args):
+    rows = read_jsonl(args.cards)
+    out_rows = build_arbitrage_candidates(rows)
+    write_csv(args.out, out_rows, ARBITRAGE_FIELDNAMES)
     print(json.dumps({"out": args.out, "candidates": len(out_rows), "fee_rate": FEE_RATE}, ensure_ascii=False, indent=2))
 
+
+def index_credentials_available():
+    return bool(os.getenv("RENAISS_INDEX_API_KEY") and os.getenv("RENAISS_INDEX_API_SECRET"))
+
+
+def renaiss_index_get(path, timeout=60):
+    base = os.getenv("RENAISS_INDEX_API_BASE", "https://api.renaissos.com").rstrip("/")
+    headers = {"Accept": "application/json", "User-Agent": "RenaissCollectorAssistant/0.1"}
+    if os.getenv("RENAISS_INDEX_API_KEY") and os.getenv("RENAISS_INDEX_API_SECRET"):
+        headers["X-Api-Key"] = os.getenv("RENAISS_INDEX_API_KEY")
+        headers["X-Api-Secret"] = os.getenv("RENAISS_INDEX_API_SECRET")
+    req = urllib.request.Request(base + path, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode()
+        payload = json.loads(raw) if raw else {}
+        return {"status": resp.status, "rate_limit_remaining": resp.headers.get("X-RateLimit-Remaining"), "data": payload}
+
+
+def search_index_by_serial(serial_raw, limit=3):
+    q = str(serial_raw or "").strip()
+    if not q:
+        return {"query": q, "results": []}
+    path = "/v1/search?" + urllib.parse.urlencode({"q": q, "limit": limit})
+    return renaiss_index_get(path)
+
+
+def result_grade_score(card, result):
+    score = 0
+    company = str(result.get("company") or "").lower()
+    grading = str(card.get("gradingCompany") or "").lower()
+    if grading and company and grading in company:
+        score += 3
+    grade = str(card.get("grade") or "").lower().replace("gem mint", "").strip()
+    grade_label = str(result.get("gradeLabel") or result.get("grade") or "").lower()
+    if grade and grade in grade_label:
+        score += 2
+    name = str(card.get("name") or card.get("pokemonName") or "").lower()
+    rname = str(result.get("name") or "").lower()
+    if name and rname and (name in rname or rname in name):
+        score += 1
+    return score
+
+
+def best_index_result(card, results):
+    if not results:
+        return None
+    return sorted(results, key=lambda r: (result_grade_score(card, r), r.get("priceUsdCents") or 0), reverse=True)[0]
+
+
+def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, delay=0.25, max_cards=0):
+    out_rows = []
+    searched = 0
+    cards = rows[:max_cards] if max_cards else rows
+    for r in cards:
+        ask = r.get("ask_usdt")
+        serial = r.get("serial_raw") or r.get("serial_number")
+        if not ask or ask <= 0 or not serial:
+            continue
+        try:
+            response = search_index_by_serial(serial, limit=search_limit)
+            data = response.get("data") or {}
+            results = data.get("results") or []
+            searched += 1
+            best = best_index_result(r, results)
+            if not best or best.get("priceUsdCents") is None:
+                continue
+            price_usd = float(best.get("priceUsdCents")) / 100.0
+            net = price_usd * (1 - FEE_RATE)
+            spread = net - float(ask)
+            if spread < min_spread:
+                continue
+            out_rows.append({
+                "tokenId": r.get("tokenId"), "name": r.get("name"),
+                "serial_raw": r.get("serial_raw"), "serial_number": r.get("serial_number"),
+                "ask_usdt": ask, "index_query": str(serial),
+                "index_result_count": len(results), "index_price_usd": price_usd,
+                "index_price_net_usd": net, "index_spread_usdt": spread,
+                "index_spread_pct": spread / float(ask) if ask else None,
+                "index_confidence": best.get("confidence"),
+                "index_last_sale_at": best.get("lastSaleAt"), "index_href": best.get("href"),
+                "index_match_name": best.get("name"), "index_match_grade": best.get("gradeLabel") or best.get("grade"),
+                "index_match_company": best.get("company"), "fee_rate": FEE_RATE,
+                "ranking_value": spread,
+                "risk_notes": "Renaiss OS Index price is a benchmark, not executable liquidity; 2% seller fee included; refresh marketplace and index data before trading.",
+                "source": "Renaiss marketplace + Renaiss OS Index API",
+            })
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:300] if hasattr(e, "read") else ""
+            raise RuntimeError(f"Renaiss OS Index API HTTP {e.code}: {body or e.reason}")
+        if delay:
+            time.sleep(delay)
+    out_rows.sort(key=lambda x: x.get("ranking_value") or 0, reverse=True)
+    return out_rows, searched
+
+
+def cmd_index_arbitrage_scan(args):
+    if args.require_key and not index_credentials_available():
+        raise SystemExit("Renaiss OS Index API key/secret required for index-arbitrage-scan. Fill .env or pass --allow-public-index for a tiny public-quota smoke test.")
+    rows = read_jsonl(args.cards)
+    out_rows, searched = build_index_arbitrage_candidates(
+        rows,
+        search_limit=args.search_limit,
+        min_spread=args.min_spread,
+        delay=args.inter_request_delay,
+        max_cards=args.max_cards,
+    )
+    write_csv(args.out, out_rows, INDEX_ARBITRAGE_FIELDNAMES)
+    print(json.dumps({
+        "out": args.out,
+        "cards_input": len(rows),
+        "cards_searched": searched,
+        "candidates": len(out_rows),
+        "fee_rate": FEE_RATE,
+        "requires_index_api_key": args.require_key,
+    }, ensure_ascii=False, indent=2))
+
+
+def read_watchlist(path):
+    token_ids = []
+    seen = set()
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"watchlist file not found: {path}")
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tid = None
+        if line.startswith("{"):
+            try:
+                row = json.loads(line)
+                tid = row.get("tokenId") or parse_token_id(str(row.get("card_url", "")))
+            except Exception:
+                tid = parse_token_id(line)
+        else:
+            # Works for plain tokenId, Renaiss card URL, or simple CSV first cell.
+            tid = parse_token_id(line.split(",")[0]) or parse_token_id(line)
+        if tid and tid not in seen:
+            seen.add(tid); token_ids.append(tid)
+    return token_ids
+
+
+def cmd_watchlist_snapshot(args):
+    token_ids = []
+    if args.watchlist:
+        token_ids.extend(read_watchlist(args.watchlist))
+    for value in args.token_id or []:
+        tid = parse_token_id(value)
+        if tid:
+            token_ids.append(tid)
+    token_ids = list(dict.fromkeys(token_ids))
+    if args.limit:
+        token_ids = token_ids[:args.limit]
+    if not token_ids:
+        raise SystemExit("No tokenIds found in watchlist.")
+    results = asyncio.run(run_card_detail_batch(token_ids, concurrency=1, inter_request_delay=args.inter_request_delay, retries=args.retries, timeout=args.timeout, method=args.method))
+    rows = []
+    collected_at = utc_now()
+    for r in results:
+        if "error" in r:
+            rows.append({"tokenId": r.get("tokenId"), "error": r.get("error"), "error_status": r.get("error_status"), "collected_at_utc": collected_at, "source": r.get("method")})
+        else:
+            row = normalize_detail(r, collected_at)
+            row["watchlist_snapshot_at_utc"] = collected_at
+            rows.append(row)
+    write_jsonl(args.out, rows)
+    print(json.dumps({"out": args.out, "token_ids": len(token_ids), "rows": len(rows), "collected_at_utc": collected_at}, ensure_ascii=False, indent=2))
 
 def main():
     p = argparse.ArgumentParser()
@@ -611,6 +852,19 @@ def main():
     d.set_defaults(func=cmd_card_details)
     s = sub.add_parser("sequential-scan"); s.add_argument("--cards", required=True); s.add_argument("--out", required=True); s.set_defaults(func=cmd_sequential_scan)
     a = sub.add_parser("arbitrage-scan"); a.add_argument("--cards", required=True); a.add_argument("--out", required=True); a.set_defaults(func=cmd_arbitrage_scan)
+    ia = sub.add_parser("index-arbitrage-scan", help="Compare Renaiss marketplace ask with Renaiss OS Index benchmark price using attributes.Serial")
+    ia.add_argument("--cards", required=True); ia.add_argument("--out", required=True)
+    ia.add_argument("--search-limit", type=int, default=3)
+    ia.add_argument("--min-spread", type=float, default=0.0)
+    ia.add_argument("--inter-request-delay", type=float, default=0.35)
+    ia.add_argument("--max-cards", type=int, default=0, help="optional cap for smoke tests; 0 means all eligible cards")
+    ia.add_argument("--allow-public-index", dest="require_key", action="store_false", default=True, help="allow public 10/day Index API quota for tiny smoke tests")
+    ia.set_defaults(func=cmd_index_arbitrage_scan)
+    wl = sub.add_parser("watchlist-snapshot", help="Snapshot selected Renaiss cards for report-only watchlist monitoring")
+    wl.add_argument("--watchlist"); wl.add_argument("--token-id", action="append")
+    wl.add_argument("--out", required=True); wl.add_argument("--method", choices=["api", "cli"], default="api")
+    wl.add_argument("--inter-request-delay", type=float, default=1.0); wl.add_argument("--retries", type=int, default=1); wl.add_argument("--timeout", type=int, default=120); wl.add_argument("--limit", type=int, default=0)
+    wl.set_defaults(func=cmd_watchlist_snapshot)
     args = p.parse_args(); args.func(args)
 
 if __name__ == "__main__":

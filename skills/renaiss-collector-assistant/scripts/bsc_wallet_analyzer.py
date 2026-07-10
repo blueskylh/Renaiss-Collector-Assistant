@@ -6,7 +6,13 @@ For full wallet history this helper needs an indexer. In `auto` mode it uses
 Surf wallet-history when available; with an Etherscan/BscScan key it can be
 extended to Etherscan V2 (`chainid=56`). Receipt decoding itself uses BSC RPC.
 """
-import argparse, collections, datetime, json, os, shutil, subprocess, sys, urllib.request
+import argparse, base64, collections, datetime, json, os, shutil, subprocess, sys, urllib.parse, urllib.request
+
+try:
+    from common_env import load_dotenv_files
+    load_dotenv_files()
+except Exception:
+    pass
 
 RPCS = [
     os.getenv("BSC_RPC_URL_1", "https://bsc-dataseed.binance.org/"),
@@ -104,7 +110,24 @@ def erc1155_uri(token_id):
     return decode_abi_string(result)
 
 
+def normalize_metadata_uri(uri, token_id):
+    if not uri:
+        return uri
+    token_hex = format(int(token_id), "064x")
+    uri = str(uri).replace("{id}", token_hex)
+    if uri.startswith("ipfs://"):
+        return "https://ipfs.io/ipfs/" + uri[len("ipfs://"):].lstrip("/")
+    if uri.startswith("ar://"):
+        return "https://arweave.net/" + uri[len("ar://"):].lstrip("/")
+    return uri
+
+
 def fetch_json_url(url):
+    if url.startswith("data:application/json"):
+        meta, data = url.split(",", 1)
+        if ";base64" in meta:
+            return json.loads(base64.b64decode(data).decode("utf-8"))
+        return json.loads(urllib.parse.unquote(data))
     req = urllib.request.Request(url, headers={"User-Agent": "RenaissCollectorAssistant/0.1"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
@@ -113,12 +136,14 @@ def fetch_json_url(url):
 def resolve_sbt_metadata(ids):
     out = []
     for sid in sorted(set(ids)):
-        item = {"id": sid, "name": None, "description": None, "uri": None, "image": None}
+        item = {"id": sid, "name": None, "description": None, "uri": None, "resolved_uri": None, "image": None}
         try:
             uri = erc1155_uri(sid)
             item["uri"] = uri
-            if uri:
-                meta = fetch_json_url(uri)
+            resolved_uri = normalize_metadata_uri(uri, sid) if uri else None
+            item["resolved_uri"] = resolved_uri
+            if resolved_uri:
+                meta = fetch_json_url(resolved_uri)
                 item["name"] = meta.get("name")
                 item["description"] = meta.get("description")
                 item["image"] = meta.get("image")
@@ -166,7 +191,7 @@ def infer_pack_type(amount_usdt, catalog):
 
 def block_time(block_hex):
     block = rpc("eth_getBlockByNumber", [block_hex, False])
-    return datetime.datetime.fromtimestamp(int(block["timestamp"], 16), datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.datetime.fromtimestamp(int(block["timestamp"], 16), datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def decode_tx(tx_hash):
@@ -295,45 +320,131 @@ def fetch_wallet_detail(address, source="auto"):
 
 
 def migration_edges(decoded):
+    """Infer strict old_wallet -> new_wallet migration edges from one transaction.
+
+    Avoids candidate cartesian products: SBT burn/mint evidence is paired by
+    overlapping IDs, and USDT/NFT evidence only strengthens direct from->to
+    pairs already present in transaction logs.
+    """
     if decoded.get("classification") != "legacy_wallet_migration":
         return []
-    old_candidates, new_candidates = set(), set()
-    sbt_ids = set()
+
+    burned_by_old = collections.defaultdict(set)
+    minted_by_new = collections.defaultdict(set)
+    direct_pairs = collections.defaultdict(lambda: {"usdt": 0.0, "nft": 0})
+
     for b in decoded.get("renaiss_sbt_batches") or []:
         f, t = b.get("from"), b.get("to")
+        ids = set(b.get("ids") or [])
         if f and f != ZERO and t == ZERO:
-            old_candidates.add(f)
-            sbt_ids.update(b.get("ids") or [])
+            burned_by_old[f].update(ids)
         if t and t != ZERO and f == ZERO:
-            new_candidates.add(t)
-            sbt_ids.update(b.get("ids") or [])
+            minted_by_new[t].update(ids)
     for s in decoded.get("renaiss_sbt_singles") or []:
         f, t = s.get("from"), s.get("to")
+        ids = {s.get("id")} if s.get("id") is not None else set()
         if f and f != ZERO and t == ZERO:
-            old_candidates.add(f)
-            if s.get("id") is not None: sbt_ids.add(s.get("id"))
+            burned_by_old[f].update(ids)
         if t and t != ZERO and f == ZERO:
-            new_candidates.add(t)
-            if s.get("id") is not None: sbt_ids.add(s.get("id"))
-    for u in decoded.get("usdt_transfers") or []:
-        if u.get("from") and u.get("to"):
-            old_candidates.add(u["from"])
-            new_candidates.add(u["to"])
-    edges = []
-    for old in sorted(old_candidates):
-        for new in sorted(new_candidates):
-            if old != new and old != ZERO and new != ZERO:
-                edges.append({
-                    "old_wallet": old,
-                    "new_wallet": new,
-                    "tx_hash": decoded.get("tx_hash"),
-                    "time_utc": decoded.get("time_utc"),
-                    "migrated_usdt": sum(u["amount_usdt"] for u in decoded.get("usdt_transfers") or [] if u.get("from") == old and u.get("to") == new),
-                    "migrated_nft_count": sum(1 for n in decoded.get("renaiss_nft_transfers") or [] if n.get("from") == old and n.get("to") == new),
-                    "migrated_sbt_ids": sorted(sbt_ids),
-                })
-    return edges
+            minted_by_new[t].update(ids)
 
+    def valid_wallet(addr):
+        return bool(addr and addr != ZERO and addr.lower() not in KNOWN_RENAISS_CONTRACTS)
+
+    for u in decoded.get("usdt_transfers") or []:
+        f, t = u.get("from"), u.get("to")
+        if valid_wallet(f) and valid_wallet(t) and f != t:
+            direct_pairs[(f, t)]["usdt"] += float(u.get("amount_usdt") or 0)
+    for n in decoded.get("renaiss_nft_transfers") or []:
+        f, t = n.get("from"), n.get("to")
+        if valid_wallet(f) and valid_wallet(t) and f != t:
+            direct_pairs[(f, t)]["nft"] += 1
+
+    edge_map = {}
+    for old, burned_ids in burned_by_old.items():
+        if not valid_wallet(old):
+            continue
+        for new, minted_ids in minted_by_new.items():
+            if not valid_wallet(new) or old == new:
+                continue
+            overlap = burned_ids & minted_ids
+            # Pair SBT burn/mint only when IDs overlap. If both sides are empty,
+            # there is no useful SBT identity evidence.
+            if not overlap:
+                continue
+            edge_map[(old, new)] = {
+                "old_wallet": old,
+                "new_wallet": new,
+                "tx_hash": decoded.get("tx_hash"),
+                "time_utc": decoded.get("time_utc"),
+                "block_number": decoded.get("block_number"),
+                "migrated_usdt": 0.0,
+                "migrated_nft_count": 0,
+                "migrated_sbt_ids": sorted(overlap),
+                "evidence": ["sbt_burn_mint_same_tx"],
+            }
+
+    # Direct old->new USDT/NFT transfers strengthen existing SBT edges, or can
+    # create an edge when the transaction is explicitly sent to the migration helper.
+    for (old, new), info in direct_pairs.items():
+        if old == new:
+            continue
+        edge = edge_map.get((old, new))
+        if edge is None:
+            # When SBT burn/mint evidence exists, do not invent additional migration
+            # edges from unrelated USDT transfers in the same transaction.
+            if edge_map or (decoded.get("to") or "").lower() != MIGRATION:
+                continue
+            edge = {
+                "old_wallet": old,
+                "new_wallet": new,
+                "tx_hash": decoded.get("tx_hash"),
+                "time_utc": decoded.get("time_utc"),
+                "block_number": decoded.get("block_number"),
+                "migrated_usdt": 0.0,
+                "migrated_nft_count": 0,
+                "migrated_sbt_ids": [],
+                "evidence": [],
+            }
+            edge_map[(old, new)] = edge
+        if info.get("usdt"):
+            edge["migrated_usdt"] += info["usdt"]
+            edge["evidence"].append("direct_usdt_transfer")
+        if info.get("nft"):
+            edge["migrated_nft_count"] += info["nft"]
+            edge["evidence"].append("direct_nft_transfer")
+
+    for edge in edge_map.values():
+        edge["evidence"] = sorted(set(edge.get("evidence") or []))
+    return sorted(edge_map.values(), key=lambda e: (e.get("block_number") or 0, e.get("old_wallet"), e.get("new_wallet")))
+
+
+def migration_component(primary, migrations):
+    primary = primary.lower()
+    undirected = collections.defaultdict(set)
+    outgoing = collections.defaultdict(list)
+    incoming = collections.defaultdict(list)
+    for e in migrations:
+        old, new = e["old_wallet"], e["new_wallet"]
+        undirected[old].add(new); undirected[new].add(old)
+        outgoing[old].append(e); incoming[new].append(e)
+    component = {primary}
+    queue = [primary]
+    while queue:
+        node = queue.pop(0)
+        for nxt in undirected.get(node, set()):
+            if nxt not in component:
+                component.add(nxt); queue.append(nxt)
+    terminals = sorted([w for w in component if not any(e["new_wallet"] in component for e in outgoing.get(w, []))])
+    if not terminals:
+        terminals = [primary]
+    # If multiple terminal wallets exist, pick the one with the latest incoming migration as the display
+    # current wallet, but surface ambiguity to the report.
+    def latest_incoming_block(w):
+        vals = [e.get("block_number") or 0 for e in incoming.get(w, [])]
+        return max(vals) if vals else 0
+    current = sorted(terminals, key=lambda w: (latest_incoming_block(w), w), reverse=True)[0]
+    return current, sorted(component), terminals
 
 def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_details):
     primary = primary.lower()
@@ -343,19 +454,10 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
         for e in migration_edges(d):
             migrations.append(e)
             cluster.add(e["old_wallet"]); cluster.add(e["new_wallet"])
-    current_wallet = primary
-    legacy_wallets = []
-    for e in migrations:
-        if primary == e["new_wallet"]:
-            current_wallet = primary
-            legacy_wallets.append(e["old_wallet"])
-        elif primary == e["old_wallet"]:
-            current_wallet = e["new_wallet"]
-            legacy_wallets.append(primary)
-        else:
-            legacy_wallets.append(e["old_wallet"])
-    legacy_wallets = sorted(set([w for w in legacy_wallets if w != current_wallet]))
-    cluster = sorted(set(cluster))
+    current_wallet, component_cluster, current_wallet_candidates = migration_component(primary, migrations) if migrations else (primary, [primary], [primary])
+    cluster = sorted(set(component_cluster if migrations else cluster))
+    legacy_wallets = sorted([w for w in cluster if w != current_wallet])
+    current_wallet_ambiguous = len(current_wallet_candidates) > 1
 
     counters = collections.Counter()
     nft_in = []; nft_out = []
@@ -440,6 +542,8 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
     return {
         "primary_wallet": primary,
         "current_wallet": current_wallet,
+        "current_wallet_candidates": current_wallet_candidates,
+        "current_wallet_ambiguous": current_wallet_ambiguous,
         "legacy_wallets": legacy_wallets,
         "wallet_cluster": cluster,
         "migration_detected": bool(migrations),
@@ -516,7 +620,7 @@ def build_wallet_report(address, limit=100, source="auto", max_pages=5):
                         queue.append(candidate)
     summary = summarize_cluster(address, history_by_wallet, decoded_by_hash, wallet_details)
     return {
-        "generated_at_utc": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "source": "BSC wallet-history index + BSC RPC receipts",
         "summary": summary,
         "history_meta": {w: h.get("meta") for w, h in history_by_wallet.items()},

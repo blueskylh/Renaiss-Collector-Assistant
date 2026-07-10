@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.4`
+Version: `0.1.5`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -76,6 +76,25 @@ python3 scripts/renaiss_cli_tools.py sequential-scan --cards data/psa_card_detai
 
 ```bash
 python3 scripts/renaiss_cli_tools.py arbitrage-scan --cards data/psa_card_details.jsonl --out outputs/arbitrage_candidates.csv
+```
+
+
+Renaiss OS Index 价格套利扫描（需要 `.env` 中配置 Renaiss OS Index API key，公共额度只适合小测试）：
+
+```bash
+python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
+  --cards data/marketplace_all_listed.jsonl \
+  --out outputs/index_arbitrage_candidates.csv
+```
+
+输出会包含 `index_price_usd`、`index_confidence`、`index_spread_usdt` 和 `risk_notes`。
+
+卡牌 watchlist 快照：
+
+```bash
+python3 scripts/renaiss_cli_tools.py watchlist-snapshot \
+  --watchlist data/watchlist.txt \
+  --out outputs/watchlist_snapshot.jsonl
 ```
 
 Renaiss Index API 查询：

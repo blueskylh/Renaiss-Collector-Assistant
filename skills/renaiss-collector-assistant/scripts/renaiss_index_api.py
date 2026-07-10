@@ -2,6 +2,12 @@
 """Minimal Renaiss OS Index API helper."""
 import argparse, json, os, urllib.parse, urllib.request
 
+try:
+    from common_env import load_dotenv_files
+    load_dotenv_files()
+except Exception:
+    pass
+
 BASE = os.getenv("RENAISS_INDEX_API_BASE", "https://api.renaissos.com").rstrip("/")
 KEY = os.getenv("RENAISS_INDEX_API_KEY")
 SECRET = os.getenv("RENAISS_INDEX_API_SECRET")

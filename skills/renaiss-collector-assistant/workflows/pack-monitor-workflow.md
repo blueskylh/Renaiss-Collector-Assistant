@@ -10,17 +10,19 @@ npx --yes renaiss packs --json
 
 Track current pack catalog dynamically. Do not hardcode the full list because new packs may appear.
 
-Useful fields:
+Useful fields and units:
 
-| Field | Meaning |
-|---|---|
-| `slug` | Pack slug, e.g. `omega`, `renacrypt-pack`, `eden-pack`. |
-| `name` | Display name. |
-| `packType` | Pack type, e.g. perpetual. |
-| `stage` | active/inactive lifecycle. |
-| `priceInUsdt` | Raw USDT wei pack price. |
-| `expectedValueInUsd` | USD cents expected value. |
-| `featuredCardFmvInUsd` | USD cents featured card FMV. |
+| Field | Meaning | Display conversion |
+|---|---|---|
+| `slug` | Pack slug, e.g. `omega`, `renacrypt-pack`, `eden-pack`. | text |
+| `name` | Display name. | text |
+| `packType` | Pack type, e.g. perpetual. | text |
+| `stage` | active/inactive lifecycle. | text |
+| `priceInUsdt` | Raw USDT base units / wei-style integer. | `price_usdt = priceInUsdt / 1e18` |
+| `expectedValueInUsd` | Raw USD cents expected value. | `expected_value_usd = expectedValueInUsd / 100` |
+| `featuredCardFmvInUsd` | Raw USD cents featured card FMV. | `featured_fmv_usd = featuredCardFmvInUsd / 100` |
+
+Current examples observed through the Renaiss CLI use `priceInUsdt` as 18-decimal USDT base units, so `48000000000000000000` means `48 USDT`. If future CLI output changes unit shape, ask the user/Renaiss team for clarification before publishing pack price reports.
 
 ## Monitor one pack
 
@@ -32,12 +34,12 @@ Read `recentOpenedPacks` and compare against the previous snapshot.
 
 Monitor fields:
 
-| Field | Meaning |
-|---|---|
-| `collectibleTokenId` | Opened card tokenId. |
-| `tier` | Pull tier. |
-| `fmv` | Raw USD cents FMV. |
-| `pulledAtTimestamp` | Pull timestamp. |
+| Field | Meaning | Display conversion |
+|---|---|---|
+| `collectibleTokenId` | Opened card tokenId. | text |
+| `tier` | Pull tier. | text |
+| `fmv` | Raw USD cents FMV. | `fmv_usd = fmv / 100` |
+| `pulledAtTimestamp` | Pull timestamp. | UTC datetime |
 
 ## Suggested defaults
 
