@@ -464,6 +464,8 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
             cluster.add(e["old_wallet"]); cluster.add(e["new_wallet"])
     current_wallet, component_cluster, current_wallet_candidates = migration_component(primary, migrations) if migrations else (primary, [primary], [primary])
     cluster = sorted(set(component_cluster if migrations else cluster))
+    component_set = set(cluster)
+    migrations = [e for e in migrations if e.get("old_wallet") in component_set and e.get("new_wallet") in component_set]
     legacy_wallets = sorted([w for w in cluster if w != current_wallet])
     current_wallet_ambiguous = len(current_wallet_candidates) > 1
 
@@ -621,22 +623,51 @@ def build_wallet_report(address, limit=100, source="auto", max_pages=5, max_wall
                 decoded_by_hash[h] = decode_tx(h)
             except Exception as e:
                 decoded_by_hash[h] = {"tx_hash": h, "error": str(e), "classification": "decode_error"}
-        # Find migration-linked wallets and add them to the queue.
+        # Find migration-linked wallets and add only the primary wallet's connected component.
+        all_edges = []
         for d in list(decoded_by_hash.values()):
-            for e in migration_edges(d):
-                for candidate in [e["old_wallet"], e["new_wallet"]]:
-                    if candidate not in seen_wallets and candidate not in queue:
-                        queue.append(candidate)
+            all_edges.extend(migration_edges(d))
+        if all_edges:
+            _current, connected_wallets, _terminals = migration_component(address, all_edges)
+            for candidate in connected_wallets:
+                if candidate not in seen_wallets and candidate not in queue:
+                    queue.append(candidate)
     wallet_scan_truncated = bool(queue)
     wallets_pending = sorted(set(queue))
     summary = summarize_cluster(address, history_by_wallet, decoded_by_hash, wallet_details)
+    history_incomplete_wallets = []
+    history_errors = {}
+    for wallet, hist in history_by_wallet.items():
+        meta = hist.get("meta") or {}
+        if meta.get("has_more_last") or hist.get("error"):
+            history_incomplete_wallets.append(wallet)
+            if hist.get("error"):
+                history_errors[wallet] = hist.get("error")
+    decode_error_count = sum(1 for tx in decoded_by_hash.values() if tx.get("error"))
+    report_partial = bool(wallet_scan_truncated or history_incomplete_wallets or decode_error_count)
+    partial_reasons = []
+    if wallet_scan_truncated:
+        partial_reasons.append("wallet_scan_truncated")
+    if history_incomplete_wallets:
+        partial_reasons.append("history_scan_truncated_or_error")
+    if decode_error_count:
+        partial_reasons.append("decode_errors")
     summary["wallet_scan_truncated"] = wallet_scan_truncated
     summary["wallets_scanned"] = len(seen_wallets)
     summary["wallets_pending"] = wallets_pending
     summary["max_wallets"] = max_wallets
-    summary["pnl_completeness"] = "partial" if wallet_scan_truncated else "complete_within_fetched_history"
+    summary["history_scan_truncated"] = bool(history_incomplete_wallets)
+    summary["history_incomplete_wallets"] = sorted(history_incomplete_wallets)
+    summary["history_errors"] = history_errors
+    summary["decode_error_count"] = decode_error_count
+    summary["pnl_completeness"] = "partial" if report_partial else "complete_within_fetched_history"
+    summary["pnl_partial_reasons"] = partial_reasons
     if wallet_scan_truncated:
         summary.setdefault("data_notes", []).append("Wallet scan hit --max-wallets; spend/income/net spend are partial until pending wallets are scanned.")
+    if history_incomplete_wallets:
+        summary.setdefault("data_notes", []).append("Wallet history pagination did not fully exhaust for at least one scanned wallet, or the history source returned an error; spend/income/net spend are partial.")
+    if decode_error_count:
+        summary.setdefault("data_notes", []).append("One or more transaction receipts failed to decode; spend/income/net spend are partial.")
     return {
         "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "source": "BSC wallet-history index + BSC RPC receipts",
@@ -661,8 +692,14 @@ def write_wallet_markdown(report, out_md):
     lines.append(f"- Legacy wallets: {', '.join('`'+w+'`' for w in s['legacy_wallets']) if s['legacy_wallets'] else 'none detected'}")
     lines.append(f"- Migration detected: {s['migration_detected']}")
     lines.append(f"- Wallet scan completeness: {s.get('pnl_completeness', 'unknown')}")
+    if s.get('pnl_partial_reasons'):
+        lines.append(f"- Partial reasons: {', '.join(s.get('pnl_partial_reasons', []))}")
     if s.get('wallet_scan_truncated'):
         lines.append(f"- Pending wallets not scanned: {', '.join('`'+w+'`' for w in s.get('wallets_pending', []))}")
+    if s.get('history_incomplete_wallets'):
+        lines.append(f"- Wallet history incomplete: {', '.join('`'+w+'`' for w in s.get('history_incomplete_wallets', []))}")
+    if s.get('decode_error_count'):
+        lines.append(f"- Decode errors: {s.get('decode_error_count')}")
     lines.append("")
     if s["migrations"]:
         lines.append("## Migration")

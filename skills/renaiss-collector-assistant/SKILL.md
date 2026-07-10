@@ -206,6 +206,8 @@ data/renaiss/marketplace/YYYY-MM-DD/marketplace_listed_YYYYMMDD_HHMMSS.jsonl
 
 Do not discard raw data after producing a report.
 
+Marketplace snapshots must be written atomically: write to `OUT.tmp`, finish all pages, then `os.replace(tmp, OUT)`. Save a small `OUT.meta.json` with `complete=true`, pages, rows, and timestamps.
+
 ---
 
 ## Sequential Cert / 连号 SBT scan
@@ -352,6 +354,7 @@ Rules:
 - Output `index_confidence` so users can see whether the benchmark is high/low confidence.
 - Explain that Index price is not executable liquidity.
 - Continue scanning after per-card Index API errors and save errors to JSONL.
+- Save per-card state to `OUT.state.jsonl`; `--resume` skips terminal statuses such as `candidate`, `no_price`, `no_spread`, `no_exact_match`, `expired`, and `invalid_input`, while retrying transient errors.
 
 Mandatory risk notes:
 
@@ -431,7 +434,9 @@ Wallet scan completeness:
 
 - `--max-wallets` defaults to 20.
 - If queue still has wallets after the limit, set `wallet_scan_truncated = true`.
-- When truncated, mark `pnl_completeness = partial` and do not present spend/income/net spend as complete.
+- If wallet-history still has more pages after `--max-pages`, set `history_scan_truncated = true`.
+- If any receipt decode fails, set `decode_error_count > 0`.
+- If any of those conditions are true, mark `pnl_completeness = partial` and do not present spend/income/net spend as complete.
 
 - Wallet cluster and migration transactions.
 - Pack count, total spend, and inferred pack type.
@@ -521,11 +526,11 @@ Before responding to the user, verify:
 - Did you convert USDT wei and USD cents correctly?
 - For Sequential Cert, did you use `attributes.Serial`, not `cardNumber`?
 - For arbitrage, did you deduct 2% seller fee and include risk notes?
-- For wallet analysis, did you merge legacy and current wallets and exclude migration from PnL?
+- For wallet analysis, did you merge only the primary wallet's connected migration component, exclude migration from PnL, and mark partial when history/decode/scan limits apply?
 - For SBT, did you account for ERC-1155 `TransferBatch` and avoid multi-user SBT-overlap migration false positives?
 - For slow `renaiss card` calls, did you use bounded concurrency or explain the runtime?
 - For Index API arbitrage, did you use exact `/v1/graded/{cert}` matching, show `index_confidence`, and save per-card errors?
-- Did you skip expired asks and avoid non-PSA rows in default Sequential Cert scans?
+- Did you preserve `askExpiresAt` from marketplace snapshots, skip expired asks, and avoid non-PSA rows in default Sequential Cert scans?
 - Did you save raw data when running sequential or arbitrage scans?
 
 

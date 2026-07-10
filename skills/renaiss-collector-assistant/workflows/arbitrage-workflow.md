@@ -64,6 +64,7 @@ Output must include:
 - `index_response_cert`
 - risk notes
 - per-card failures in `OUT.errors.jsonl`
+- per-card checkpoint state in `OUT.state.jsonl` for `--resume`
 
 Risk language:
 
@@ -74,3 +75,8 @@ Risk language:
 - Expired asks are skipped.
 
 If the user wants to buy a candidate, tell them to search the PSA cert / serial or card details on `https://www.renaiss.xyz/`.
+
+
+## Expiry guard
+
+Marketplace snapshots preserve `askExpiresAt`; ordinary and Index arbitrage scanners skip expired asks.

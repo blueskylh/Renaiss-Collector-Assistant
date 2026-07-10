@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.6`
+Version: `0.1.7`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -30,7 +30,7 @@ bash scripts/install_check.sh
 python3 scripts/renaiss_cli_tools.py check
 ```
 
-抓取已挂单 marketplace 快照：
+抓取已挂单 marketplace 快照（写入采用临时文件 + 原子替换，避免失败刷新覆盖上一份完整数据）：
 
 ```bash
 python3 scripts/renaiss_cli_tools.py marketplace-snapshot --listed --limit 100 --out data/marketplace.jsonl
@@ -87,7 +87,7 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
   --out outputs/index_arbitrage_candidates.csv
 ```
 
-输出会包含 `index_price_usd`、`index_confidence`、`exact_cert_match`、`index_spread_usdt` 和 `risk_notes`。不能 exact cert match 或没有 Index 价格的行会写入 `outputs/index_arbitrage_candidates.csv.errors.jsonl`。
+输出会包含 `index_price_usd`、`index_confidence`、`exact_cert_match`、`index_spread_usdt` 和 `risk_notes`。不能 exact cert match 或没有 Index 价格的行会写入 `outputs/index_arbitrage_candidates.csv.errors.jsonl`；每张卡的处理状态会写入 `outputs/index_arbitrage_candidates.csv.state.jsonl`，用于 `--resume`。
 
 卡牌 watchlist 快照：
 

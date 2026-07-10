@@ -107,6 +107,7 @@ def run_json(cmd, timeout=None):
 def normalize_market_card(card, collected_at):
     ask = card.get("askPriceInUSDT")
     fmv = card.get("fmvPriceInUSD")
+    ask_expires_at = card.get("askExpiresAt")
     token_id = card.get("tokenId")
     attrs = card.get("attributes") or []
     serial_raw = extract_attr(attrs, "Serial")
@@ -125,6 +126,8 @@ def normalize_market_card(card, collected_at):
         "ownerUsername": (card.get("owner") or {}).get("username"),
         "askPriceInUSDT_raw": ask,
         "ask_usdt": usdt_wei_to_float(ask),
+        "askExpiresAt": ask_expires_at,
+        "ask_is_expired_at_collection": is_expired_ask(ask_expires_at),
         "fmvPriceInUSD_raw": fmv,
         "fmv_usd": usd_cents_to_float(fmv),
         "vaultLocation": card.get("vaultLocation"),
@@ -141,9 +144,10 @@ def normalize_market_card(card, collected_at):
 
 
 def cmd_check(_):
-    print(subprocess.check_output(["node", "--version"], text=True).strip())
-    print(subprocess.check_output(["npm", "--version"], text=True).strip())
-    subprocess.run(["npx", "--yes", "renaiss", "--help"], check=True)
+    timeout = env_int("RENAISS_CLI_TIMEOUT", 180)
+    print(subprocess.check_output(["node", "--version"], text=True, timeout=30).strip())
+    print(subprocess.check_output(["npm", "--version"], text=True, timeout=30).strip())
+    subprocess.run(["npx", "--yes", "renaiss", "--help"], check=True, timeout=timeout)
 
 
 def cmd_extract_token(args):
@@ -156,30 +160,43 @@ def cmd_extract_token(args):
 def cmd_marketplace_snapshot(args):
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    meta_path = out.with_suffix(out.suffix + ".meta.json")
     offset = args.offset
     total = 0
+    pages = 0
     collected_at = utc_now()
-    with out.open("w", encoding="utf-8") as f:
-        while True:
-            cmd = ["npx", "--yes", "renaiss", "marketplace", "--limit", str(args.limit), "--offset", str(offset), "--json"]
-            if args.listed:
-                cmd.append("--listed")
-            if args.grading:
-                cmd += ["--grading", args.grading]
-            if args.category:
-                cmd += ["--category", args.category]
-            if args.search:
-                cmd += ["--search", args.search]
-            data = run_json(cmd)
-            for card in data.get("collection", []):
-                f.write(json.dumps(normalize_market_card(card, collected_at), ensure_ascii=False) + "\n")
-                total += 1
-            pag = data.get("pagination", {})
-            if not pag.get("hasMore"):
-                break
-            offset += int(pag.get("limit", args.limit))
-    print(json.dumps({"out": str(out), "rows": total, "collected_at_utc": collected_at}, ensure_ascii=False, indent=2))
-
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            while True:
+                cmd = ["npx", "--yes", "renaiss", "marketplace", "--limit", str(args.limit), "--offset", str(offset), "--json"]
+                if args.listed:
+                    cmd.append("--listed")
+                if args.grading:
+                    cmd += ["--grading", args.grading]
+                if args.category:
+                    cmd += ["--category", args.category]
+                if args.search:
+                    cmd += ["--search", args.search]
+                data = run_json(cmd)
+                pages += 1
+                for card in data.get("collection", []):
+                    f.write(json.dumps(normalize_market_card(card, collected_at), ensure_ascii=False) + "\n")
+                    total += 1
+                pag = data.get("pagination", {})
+                if not pag.get("hasMore"):
+                    break
+                offset += int(pag.get("limit", args.limit))
+        os.replace(tmp, out)
+        meta = {"complete": True, "pages": pages, "rows": total, "started_at_utc": collected_at, "completed_at_utc": utc_now(), "out": str(out)}
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    print(json.dumps({"out": str(out), "rows": total, "pages": pages, "meta_out": str(meta_path), "collected_at_utc": collected_at}, ensure_ascii=False, indent=2))
 
 def env_int(name, default):
     try:
@@ -657,6 +674,37 @@ def read_csv_key_set(path, *fields):
     return out
 
 
+def index_state_key(token_id, serial):
+    return (str(token_id or ""), str(serial or ""))
+
+
+def read_terminal_state_keys(path):
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return set()
+    keys = set()
+    for row in read_jsonl(p):
+        if row.get("terminal"):
+            keys.add(index_state_key(row.get("tokenId"), row.get("serial")))
+    return keys
+
+
+def build_index_state(row, status, *, terminal=True, error=None, extra=None):
+    serial = row.get("serial_raw") or row.get("serial_number")
+    out = {
+        "processed_at_utc": utc_now(),
+        "tokenId": row.get("tokenId"),
+        "serial": serial,
+        "status": status,
+        "terminal": terminal,
+    }
+    if error:
+        out["error"] = str(error)
+    if extra:
+        out.update(extra)
+    return out
+
+
 def build_sequential_candidates(rows, require_psa=True):
     by_serial = {}
     for r in rows:
@@ -788,12 +836,14 @@ def graded_index_lookup(cert, *, retries=2):
     data = response.get("data") or {}
     response_cert = normalize_cert(data.get("cert") or data.get("certNumber") or ((data.get("collectible") or {}).get("cardIdentifier")))
     exact = response_cert == normalized
+    explicit_found = data.get("found")
+    found = (bool(explicit_found) if explicit_found is not None else bool(data.get("card") or data.get("collectible"))) and exact
     return {
         "query_cert": cert,
         "normalized_cert": normalized,
         "response_cert": response_cert,
         "exact_cert_match": exact,
-        "found": bool(data.get("found")) and exact,
+        "found": found,
         "data": data,
         "rate_limit_remaining": response.get("rate_limit_remaining"),
     }
@@ -827,9 +877,11 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
 
     `search_limit` is kept for backward-compatible tests/CLI signatures, but exact
     graded lookup is intentionally used to avoid matching the wrong card.
+    Returns candidates, searched_count, error_rows, and per-card state rows.
     """
     out_rows = []
     errors = []
+    states = []
     searched = 0
     skip_keys = skip_keys or set()
     cards = rows[:max_cards] if max_cards else rows
@@ -837,34 +889,51 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
         ask = r.get("ask_usdt")
         serial = r.get("serial_raw") or r.get("serial_number")
         token_id = r.get("tokenId")
-        key = (str(token_id or ""), str(serial or ""))
+        key = index_state_key(token_id, serial)
         if key in skip_keys:
             continue
         if not ask or ask <= 0 or not serial:
+            states.append(build_index_state(r, "invalid_input", terminal=True, error="missing ask_usdt or serial"))
             continue
-        if is_expired_ask(r.get("askExpiresAt")):
-            errors.append({"tokenId": token_id, "serial": serial, "error": "expired_ask_skipped"})
+        if is_expired_ask(r.get("askExpiresAt")) or r.get("ask_is_expired_at_collection") is True:
+            err = {"tokenId": token_id, "serial": serial, "error": "expired_ask_skipped"}
+            errors.append(err)
+            states.append(build_index_state(r, "expired", terminal=True, error="expired_ask_skipped"))
             continue
         try:
             lookup = graded_index_lookup(serial, retries=retries)
             searched += 1
             best = graded_price_candidate(r, lookup)
             if not best:
-                errors.append({
+                status = "no_exact_match" if not lookup.get("exact_cert_match") or not lookup.get("found") else "no_price"
+                err = {
                     "tokenId": token_id,
                     "serial": serial,
                     "error": "no_exact_index_price",
+                    "status": status,
                     "found": lookup.get("found"),
                     "exact_cert_match": lookup.get("exact_cert_match"),
                     "response_cert": lookup.get("response_cert"),
-                })
+                }
+                errors.append(err)
+                states.append(build_index_state(r, status, terminal=True, error="no_exact_index_price", extra={
+                    "exact_cert_match": lookup.get("exact_cert_match"),
+                    "response_cert": lookup.get("response_cert"),
+                }))
                 continue
             price_usd = float(best.get("priceUsdCents")) / 100.0
             net = price_usd * (1 - FEE_RATE)
             spread = net - float(ask)
             if spread < min_spread:
+                states.append(build_index_state(r, "no_spread", terminal=True, extra={
+                    "index_price_usd": price_usd,
+                    "index_spread_usdt": spread,
+                    "index_confidence": best.get("confidence"),
+                    "exact_cert_match": best.get("exact_cert_match"),
+                    "index_response_cert": best.get("cert"),
+                }))
                 continue
-            out_rows.append({
+            candidate = {
                 "tokenId": token_id, "name": r.get("name"),
                 "serial_raw": r.get("serial_raw"), "serial_number": r.get("serial_number"),
                 "ask_usdt": ask, "index_query": lookup.get("normalized_cert") or str(serial),
@@ -880,13 +949,22 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
                 "ranking_value": spread,
                 "risk_notes": "Renaiss OS Index price is a benchmark, not executable liquidity; exact cert match required; 2% seller fee included; refresh marketplace and index data before trading.",
                 "source": "Renaiss marketplace + Renaiss OS Index API /v1/graded exact cert lookup",
-            })
+            }
+            out_rows.append(candidate)
+            states.append(build_index_state(r, "candidate", terminal=True, extra={
+                "index_price_usd": price_usd,
+                "index_spread_usdt": spread,
+                "index_confidence": best.get("confidence"),
+                "exact_cert_match": best.get("exact_cert_match"),
+                "index_response_cert": best.get("cert"),
+            }))
         except Exception as exc:
             errors.append({"tokenId": token_id, "serial": serial, "error": str(exc), "error_type": type(exc).__name__})
+            states.append(build_index_state(r, "transient_error", terminal=False, error=str(exc), extra={"error_type": type(exc).__name__}))
         if delay:
             time.sleep(delay)
     out_rows.sort(key=lambda x: x.get("ranking_value") or 0, reverse=True)
-    return out_rows, searched, errors
+    return out_rows, searched, errors, states
 
 
 def cmd_index_arbitrage_scan(args):
@@ -894,12 +972,17 @@ def cmd_index_arbitrage_scan(args):
         raise SystemExit("Renaiss OS Index API key/secret required for index-arbitrage-scan. Fill .env or pass --allow-public-index for a tiny public-quota smoke test.")
     rows = read_jsonl(args.cards)
     errors_out = args.errors_out or (args.out + ".errors.jsonl")
-    skip_keys = read_csv_key_set(args.out, "tokenId", "serial_raw") if args.resume else set()
+    state_out = args.state_out or (args.out + ".state.jsonl")
+    skip_keys = read_terminal_state_keys(state_out) if args.resume else set()
+    if args.resume:
+        skip_keys |= read_csv_key_set(args.out, "tokenId", "serial_raw")
     if not args.resume:
         write_csv(args.out, [], INDEX_ARBITRAGE_FIELDNAMES)
         Path(errors_out).parent.mkdir(parents=True, exist_ok=True)
         Path(errors_out).write_text("", encoding="utf-8")
-    out_rows, searched, errors = build_index_arbitrage_candidates(
+        Path(state_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(state_out).write_text("", encoding="utf-8")
+    out_rows, searched, errors, states = build_index_arbitrage_candidates(
         rows,
         search_limit=args.search_limit,
         min_spread=args.min_spread,
@@ -911,14 +994,18 @@ def cmd_index_arbitrage_scan(args):
     append_csv_rows(args.out, out_rows, INDEX_ARBITRAGE_FIELDNAMES)
     if errors:
         append_jsonl(errors_out, errors)
+    if states:
+        append_jsonl(state_out, states)
     print(json.dumps({
         "out": args.out,
         "errors_out": errors_out,
+        "state_out": state_out,
         "cards_input": len(rows),
         "cards_skipped_by_resume": len(skip_keys),
         "cards_searched": searched,
         "candidates": len(out_rows),
         "errors": len(errors),
+        "states_written": len(states),
         "fee_rate": FEE_RATE,
         "requires_index_api_key": args.require_key,
         "match_mode": "exact_/v1/graded_cert",
@@ -1010,7 +1097,8 @@ def main():
     ia.add_argument("--inter-request-delay", type=float, default=0.35)
     ia.add_argument("--max-cards", type=int, default=0, help="optional cap for smoke tests; 0 means all eligible cards")
     ia.add_argument("--errors-out", help="JSONL file for per-card Index API errors/skips; default is OUT.errors.jsonl")
-    ia.add_argument("--resume", action="store_true", help="append to existing output and skip tokenId+serial pairs already present")
+    ia.add_argument("--state-out", help="JSONL checkpoint state for every processed card; default is OUT.state.jsonl")
+    ia.add_argument("--resume", action="store_true", help="append to existing output and skip tokenId+serial pairs with terminal state")
     ia.add_argument("--retries", type=int, default=2, help="per-card Index API retry count for 429/5xx/network failures")
     ia.add_argument("--allow-public-index", dest="require_key", action="store_false", default=True, help="allow public 10/day Index API quota for tiny smoke tests")
     ia.set_defaults(func=cmd_index_arbitrage_scan)

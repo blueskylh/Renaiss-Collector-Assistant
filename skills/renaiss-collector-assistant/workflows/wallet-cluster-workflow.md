@@ -48,4 +48,4 @@ The default command uses recent wallet history by default. For exhaustive old hi
 
 ## Scan completeness
 
-Use `--max-wallets` to control cluster breadth. If `wallet_scan_truncated = true`, treat spend/income/net spend as partial until pending wallets are scanned.
+Use `--max-wallets` to control cluster breadth. If `wallet_scan_truncated = true`, `history_scan_truncated = true`, or `decode_error_count > 0`, treat spend/income/net spend as partial until pending wallets/history/receipts are resolved.

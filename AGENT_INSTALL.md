@@ -251,7 +251,7 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
   --out outputs/index_arbitrage_candidates.csv
 ```
 
-这会使用 `/v1/graded/{cert}` 精确匹配 PSA cert；不能精确匹配或没有 Index 价格的卡会写入 `*.errors.jsonl`，不会进入套利榜单。
+这会使用 `/v1/graded/{cert}` 精确匹配 PSA cert；不能精确匹配或没有 Index 价格的卡会写入 `*.errors.jsonl`，不会进入套利榜单。每张卡的处理状态会写入 `*.state.jsonl`，`--resume` 会跳过 terminal 状态，避免重复消耗 Index API 额度。
 
 ### 套利扫描
 

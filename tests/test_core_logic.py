@@ -111,13 +111,16 @@ class CoreLogicTests(unittest.TestCase):
                     "company": "PSA",
                 }}
             }
-            rows, searched, errors = cli.build_index_arbitrage_candidates([
+            rows, searched, errors, states = cli.build_index_arbitrage_candidates([
                 {"tokenId": "x", "name": "Test Card", "serial_raw": "PSA123", "serial_number": 123, "ask_usdt": 100, "gradingCompany": "PSA", "grade": "10"}
             ], delay=0)
         finally:
             cli.graded_index_lookup = old
         self.assertEqual(searched, 1)
         self.assertEqual(errors, [])
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]["status"], "candidate")
+        self.assertTrue(states[0]["terminal"])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["index_confidence"], "prime")
         self.assertTrue(rows[0]["exact_cert_match"])
@@ -162,6 +165,100 @@ class CoreLogicTests(unittest.TestCase):
             "renaiss_sbt_singles": [],
         }
         self.assertEqual(wallet.migration_edges(decoded), [])
+
+    def test_graded_lookup_found_fallback_without_found_field(self):
+        old = cli.renaiss_index_get
+        try:
+            cli.renaiss_index_get = lambda path, retries=2: {
+                "data": {"cert": "PSA12345", "card": {"priceUsdCents": 12345}}
+            }
+            lookup = cli.graded_index_lookup("PSA12345")
+        finally:
+            cli.renaiss_index_get = old
+        self.assertTrue(lookup["found"])
+        self.assertTrue(lookup["exact_cert_match"])
+
+    def test_marketplace_normalization_preserves_expiry_for_index_scan(self):
+        card = {
+            "tokenId": "1",
+            "askPriceInUSDT": "1000000000000000000",
+            "fmvPriceInUSD": "100",
+            "askExpiresAt": "2000-01-01T00:00:00Z",
+            "attributes": [{"trait": "Serial", "value": "PSA123"}],
+            "gradingCompany": "PSA",
+        }
+        row = cli.normalize_market_card(card, "2026-01-01 00:00:00 UTC")
+        self.assertEqual(row["askExpiresAt"], "2000-01-01T00:00:00Z")
+        self.assertTrue(row["ask_is_expired_at_collection"])
+        old = cli.graded_index_lookup
+        try:
+            cli.graded_index_lookup = lambda cert, retries=2: (_ for _ in ()).throw(AssertionError("expired rows should not call index"))
+            rows, searched, errors, states = cli.build_index_arbitrage_candidates([row], delay=0)
+        finally:
+            cli.graded_index_lookup = old
+        self.assertEqual(rows, [])
+        self.assertEqual(searched, 0)
+        self.assertEqual(errors[0]["error"], "expired_ask_skipped")
+        self.assertEqual(states[0]["status"], "expired")
+
+    def test_index_resume_state_skips_terminal_non_candidates(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "state.jsonl"
+            p.write_text(json.dumps({"tokenId": "x", "serial": "PSA123", "terminal": True}) + "\n", encoding="utf-8")
+            self.assertEqual(cli.read_terminal_state_keys(p), {("x", "PSA123")})
+
+    def test_wallet_summary_filters_unrelated_batch_migrations(self):
+        a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        b = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        c = "0xcccccccccccccccccccccccccccccccccccccccc"
+        d = "0xdddddddddddddddddddddddddddddddddddddddd"
+        decoded = {
+            "classification": "legacy_wallet_migration",
+            "to": wallet.MIGRATION,
+            "tx_hash": "0xbatch",
+            "block_number": 1,
+            "usdt_transfers": [
+                {"from": a, "to": b, "amount_usdt": 1},
+                {"from": c, "to": d, "amount_usdt": 1},
+            ],
+            "renaiss_nft_transfers": [],
+            "renaiss_sbt_batches": [
+                {"from": a, "to": wallet.ZERO, "ids": [1]},
+                {"from": wallet.ZERO, "to": b, "ids": [1]},
+                {"from": c, "to": wallet.ZERO, "ids": [2]},
+                {"from": wallet.ZERO, "to": d, "ids": [2]},
+            ],
+            "renaiss_sbt_singles": [],
+            "log_contract_counts": {},
+        }
+        summary = wallet.summarize_cluster(a, {}, {"0xbatch": decoded}, {})
+        self.assertEqual(set(summary["wallet_cluster"]), {a, b})
+        self.assertEqual(len(summary["migrations"]), 1)
+        self.assertEqual(summary["migrations"][0]["old_wallet"], a)
+        self.assertEqual(summary["migrations"][0]["new_wallet"], b)
+
+    def test_wallet_pnl_completeness_partial_for_history_and_decode_errors(self):
+        a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        old_fetch_history = wallet.fetch_wallet_history
+        old_fetch_detail = wallet.fetch_wallet_detail
+        old_decode_tx = wallet.decode_tx
+        try:
+            wallet.fetch_wallet_history = lambda address, limit=100, source="auto", max_pages=5: {
+                "data": [{"tx_hash": "0xdead"}],
+                "meta": {"has_more_last": True},
+                "error": None,
+            }
+            wallet.fetch_wallet_detail = lambda address, source="auto": {"data": {}, "meta": {}, "source": "test"}
+            wallet.decode_tx = lambda h: (_ for _ in ()).throw(RuntimeError("decode failed"))
+            report = wallet.build_wallet_report(a, max_wallets=20)
+        finally:
+            wallet.fetch_wallet_history = old_fetch_history
+            wallet.fetch_wallet_detail = old_fetch_detail
+            wallet.decode_tx = old_decode_tx
+        summary = report["summary"]
+        self.assertEqual(summary["pnl_completeness"], "partial")
+        self.assertTrue(summary["history_scan_truncated"])
+        self.assertEqual(summary["decode_error_count"], 1)
 
     def test_dotenv_loader(self):
         with tempfile.TemporaryDirectory() as td:
