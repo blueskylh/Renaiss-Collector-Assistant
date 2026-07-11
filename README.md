@@ -4,7 +4,7 @@
 
 ### 面向 Renaiss 收藏家的 AI Skill：查卡、看钱包、追踪开包、发现连号 PSA 机会和市场价差。
 
-本Skill旨在将AI能力引入Reniass生态，赋能社区成员便捷地参与项目、打通数据壁垒，并降低AI使用门槛，让每位成员都能切实享受到技术红利。
+本Skill旨在通过自然语言交互，将AI能力融入Reniass生态，让社区成员以对话的方式便捷参与项目、打通数据壁垒，并大幅降低理解与操作门槛。
 
 ![Version](https://img.shields.io/badge/version-v0.1.10-black?style=for-the-badge)
 ![Renaiss](https://img.shields.io/badge/Renaiss-Collector%20Assistant-6C5CE7?style=for-the-badge)
@@ -22,7 +22,15 @@
 ## 🎬 产品演示
 
 <p align="center">
-  <a href="media/demo/renaiss-collector-assistant-product-demo.mp4"><strong>🎥 点击观看产品宣传视频（MP4）</strong></a>
+  <video src="media/demo/renaiss-collector-assistant-product-demo.mp4" controls width="900">
+    你的浏览器不支持 HTML5 video 标签，请点击下方链接观看产品宣传视频。
+  </video>
+</p>
+
+<p align="center">
+  <a href="media/demo/renaiss-collector-assistant-product-demo.mp4"><strong>本地 MP4 宣传视频</strong></a>
+  &nbsp;|&nbsp;
+  <a href="https://youtu.be/JvZRrjviPjc"><strong>YouTube 演示视频</strong></a>
 </p>
 
 以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描、PSA 连号机会和 Artist Helper。
