@@ -21,17 +21,112 @@
 
 ## 🎬 产品演示
 
-> 这里预留给产品宣传视频 / Demo 视频。<br/>
-> 后续可以把视频、GIF、截图或 YouTube / X 链接放在这里，让收藏家打开仓库后就能快速理解完整使用流程。
+以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描、PSA 连号机会和 Artist Helper。
 
-<!--
-示例：
+| 场景 | 能力亮点 |
+|---|---|
+| Index 套利扫描 | 用 Renaiss OS Index exact cert 价格对比市场挂单，输出扣费后净值、利润率和置信度。 |
+| FMV 套利扫描 | 批量扫描挂牌卡牌，按 FMV 折价和 2% 卖家费筛选候选。 |
+| PSA 连号扫描 | 从市场挂牌卡里找 Sequential Cert / 连号 PSA 机会。 |
+| 钱包分析 | 合并迁移前后钱包，统计 pack、buyback、marketplace、当前余额和 SBT。 |
+| 卡牌查询与监控 | 按卡牌截图 / URL / cert 查询详情，并创建价格阈值监控。 |
+| Artist Helper | 生成 Renaiss Artist SBT 可用的卡牌风格图和线稿参考。 |
+
+<details open>
+<summary><strong>1. Renaiss OS Index 套利扫描</strong></summary>
+
 <p align="center">
-  <a href="你的产品视频链接">
-    <img src="media/product/demo-cover.png" alt="Renaiss Collector Assistant Demo" width="900" />
-  </a>
+  <img src="media/demo/hackathon/01-index-arbitrage-prompt.png" alt="Index arbitrage prompt" width="760" />
 </p>
--->
+<p align="center">
+  <img src="media/demo/hackathon/01-index-arbitrage-result.png" alt="Index arbitrage result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>2. FMV 折价套利扫描</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/02-fmv-arbitrage-prompt.png" alt="FMV arbitrage prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/02-fmv-arbitrage-result.png" alt="FMV arbitrage result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>3. PSA 连号机会扫描</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/03-sequential-cert-prompt.png" alt="Sequential cert prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/03-sequential-cert-result.png" alt="Sequential cert result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>4. Artist Helper 生成卡牌参考图</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/04-artist-helper-prompt.png" alt="Artist helper prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/04-artist-helper-result.png" alt="Artist helper result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>5. 钱包分析</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/05-wallet-analysis-prompt.png" alt="Wallet analysis prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/05-wallet-analysis-result.png" alt="Wallet analysis result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>6. 卡牌查询 + Index 参考价</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/06-card-search-prompt.png" alt="Card search prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/06-card-search-result.png" alt="Card search result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>7. 定时价格监控</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/07-watchlist-prompt.png" alt="Watchlist prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/07-watchlist-result.png" alt="Watchlist result" width="760" />
+</p>
+
+</details>
+
+<details>
+<summary><strong>8. Pack 市场与最新开包概览</strong></summary>
+
+<p align="center">
+  <img src="media/demo/hackathon/08-pack-market-prompt.png" alt="Pack market prompt" width="760" />
+</p>
+<p align="center">
+  <img src="media/demo/hackathon/08-pack-market-result.png" alt="Pack market result" width="760" />
+</p>
+
+</details>
 
 ---
 
