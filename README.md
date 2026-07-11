@@ -15,21 +15,16 @@
 
 **[👉 立即注册 Renaiss（邀请链接）](https://www.renaiss.xyz/ref/blueskyone)** &nbsp;|&nbsp; **[🐦 关注 @blueskylh1](https://twitter.com/intent/user?screen_name=blueskylh1)**
 
+https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
+
 </div>
 
 ---
 
 ## 🎬 产品演示
 
-<p align="center">
-  <video src="media/demo/renaiss-collector-assistant-product-demo.mp4" controls width="900">
-    你的浏览器不支持 HTML5 video 标签，请点击下方链接观看产品宣传视频。
-  </video>
-</p>
 
 <p align="center">
-  <a href="media/demo/renaiss-collector-assistant-product-demo.mp4"><strong>本地 MP4 宣传视频</strong></a>
-  &nbsp;|&nbsp;
   <a href="https://youtu.be/JvZRrjviPjc"><strong>YouTube 演示视频</strong></a>
 </p>
 
