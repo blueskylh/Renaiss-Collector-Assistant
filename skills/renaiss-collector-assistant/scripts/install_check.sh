@@ -36,6 +36,18 @@ with tempfile.TemporaryDirectory() as td:
 print('OK: .env loader works')
 PY
 
+printf '\nChecking optional Alchemy configuration...\n'
+python3 - <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path('scripts').resolve()))
+import bsc_wallet_analyzer as wallet
+if wallet.is_alchemy_configured():
+    print('OK: Alchemy BNB Mainnet RPC is configured (value hidden)')
+else:
+    print('INFO: ALCHEMY_API_KEY / ALCHEMY_BNB_RPC_URL not set; wallet-report will ask for an Alchemy key or use another available history source.')
+PY
+
 printf '\nChecking Renaiss CLI via npx...\n'
 TMP_HELP=$(mktemp)
 npx --yes renaiss --help >"$TMP_HELP"

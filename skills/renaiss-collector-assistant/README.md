@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.7`
+Version: `0.1.8`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -19,6 +19,7 @@ Version: `0.1.7`
 ```bash
 cd renaiss-collector-assistant-skill
 cp config.example.env .env
+# 钱包历史 / BSC 链上分析请在 .env 中填写：ALCHEMY_API_KEY=your_alchemy_api_key_here
 bash scripts/install_check.sh
 ```
 
@@ -111,17 +112,18 @@ BSC 迁移交易解析：
 python3 scripts/bsc_wallet_analyzer.py decode-migration-tx --tx 0x2d6a672c59b67dac82ac4c01e04e1e95bea8f107595239e35a0d84bc2f8c0f67
 ```
 
-Renaiss 钱包报告，自动识别并合并迁移前 / 迁移后钱包：
+Renaiss 钱包报告，自动识别并合并迁移前 / 迁移后钱包。钱包历史使用 Alchemy BNB Mainnet，需在 `.env` 中配置 `ALCHEMY_API_KEY`：
 
 ```bash
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address 0x032e4a8eb38843a65ce5e65131d1f99c10b03201 \
+  --history-source alchemy \
   --out outputs/wallet_report.json \
   --out-md outputs/wallet_report.md \
   --max-wallets 20
 ```
 
-`wallet-report` 会先查询输入地址的钱包历史，发现 `LegacyAssetMigrationHelper` 迁移交易后，把旧钱包和新钱包合并成 `wallet_cluster`，并排除迁移内部转账后统计 Renaiss NFT、SBT、Marketplace、Pack 和 USDT 流向。
+`wallet-report` 会先通过 Alchemy 查询输入地址的钱包历史，发现 `LegacyAssetMigrationHelper` 迁移交易后，把旧钱包和新钱包合并成 `wallet_cluster`，并排除迁移内部转账后统计 Renaiss NFT、SBT、Marketplace、Pack 和 USDT 流向。
 
 ## 重要规则
 

@@ -5,14 +5,15 @@ Use when a user asks for Renaiss wallet analysis.
 ```bash
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address <wallet> \
+  --history-source alchemy \
   --out outputs/wallet_report.json \
   --out-md outputs/wallet_report.md
 ```
 
 ## Required behavior
 
-1. Query recent BSC wallet history for the supplied address.
-2. Decode every transaction receipt through BSC RPC.
+1. Query BSC wallet history for the supplied address through Alchemy BNB Mainnet `alchemy_getAssetTransfers`.
+2. Decode every transaction receipt through Alchemy BNB RPC, with public BSC RPC only as a fallback for receipt decoding.
 3. If a `LegacyAssetMigrationHelper` transaction is found, infer:
    - `old_wallet`
    - `new_wallet`
@@ -43,7 +44,7 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
 
 ## Caveat
 
-The default command uses recent wallet history by default. For exhaustive old history and very active wallets, connect an indexer or Etherscan/BscScan V2 API key and paginate completely.
+The default command prefers Alchemy when `ALCHEMY_API_KEY` or `ALCHEMY_BNB_RPC_URL` is configured. For exhaustive old history and very active wallets, increase `--max-pages` or connect a dedicated archival/indexer export and paginate completely.
 
 
 ## Scan completeness

@@ -267,6 +267,49 @@ class CoreLogicTests(unittest.TestCase):
             load_dotenv_files([p], override=True)
             self.assertEqual(os.getenv("RENAISS_UNIT_TEST"), "ok")
 
+    def test_alchemy_bnb_rpc_url_derives_from_key(self):
+        old_key = os.environ.get("ALCHEMY_API_KEY")
+        old_url = os.environ.get("ALCHEMY_BNB_RPC_URL")
+        try:
+            os.environ["ALCHEMY_API_KEY"] = "unit_test_key"
+            os.environ.pop("ALCHEMY_BNB_RPC_URL", None)
+            self.assertEqual(wallet.alchemy_bnb_rpc_url(), "https://bnb-mainnet.g.alchemy.com/v2/unit_test_key")
+        finally:
+            if old_key is None:
+                os.environ.pop("ALCHEMY_API_KEY", None)
+            else:
+                os.environ["ALCHEMY_API_KEY"] = old_key
+            if old_url is None:
+                os.environ.pop("ALCHEMY_BNB_RPC_URL", None)
+            else:
+                os.environ["ALCHEMY_BNB_RPC_URL"] = old_url
+
+    def test_alchemy_transfer_merge_dedupes_hash(self):
+        rows = {}
+        wallet._merge_history_row(rows, {
+            "hash": "0xabc",
+            "blockNum": "0x10",
+            "from": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "to": "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "category": "erc20",
+            "asset": "USDT",
+            "metadata": {"blockTimestamp": "2026-07-10T00:00:00Z"},
+        })
+        wallet._merge_history_row(rows, {
+            "hash": "0xabc",
+            "blockNum": "0x10",
+            "from": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "to": "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "category": "erc721",
+            "asset": "NFT",
+            "metadata": {"blockTimestamp": "2026-07-10T00:00:00Z"},
+        })
+        self.assertEqual(list(rows), ["0xabc"])
+        self.assertEqual(rows["0xabc"]["block_number"], 16)
+        self.assertEqual(rows["0xabc"]["timestamp"], 1783641600)
+        self.assertEqual(set(rows["0xabc"]["alchemy_categories"]), {"erc20", "erc721"})
+        self.assertEqual(set(rows["0xabc"]["alchemy_assets"]), {"USDT", "NFT"})
+
 
 if __name__ == "__main__":
     unittest.main()

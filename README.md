@@ -4,7 +4,7 @@
 
 ### A collector-first AI skill for Renaiss cards, wallets, packs, SBTs, monitoring, and market opportunities.
 
-![Version](https://img.shields.io/badge/version-v0.1.7-black?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-v0.1.8-black?style=for-the-badge)
 ![Renaiss](https://img.shields.io/badge/Renaiss-Collector%20Assistant-6C5CE7?style=for-the-badge)
 ![Multi Agent](https://img.shields.io/badge/Multi--Agent-Ready-00B894?style=for-the-badge)
 ![BSC](https://img.shields.io/badge/BSC-On--Chain-F0B90B?style=for-the-badge)
@@ -139,6 +139,7 @@ RENAISS_INDEX_API_SECRET=
 | Node.js | **>= 22.0.0**，用于运行 Renaiss CLI |
 | Python | **>= 3.11**，用于运行辅助脚本 |
 | Renaiss CLI | `npx --yes renaiss` |
+| Alchemy API key | 钱包历史 / BSC 链上分析建议配置；使用 BNB Mainnet 免费 key |
 | Renaiss OS Index API key | 可选；批量 Index 价格套利扫描建议使用 |
 | Wallet scan limit | 钱包报告默认最多扫描 20 个 cluster 地址，触顶会标记 partial |
 

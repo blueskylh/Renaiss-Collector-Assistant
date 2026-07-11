@@ -99,15 +99,49 @@ cd <AGENT_SKILLS_DIR>/renaiss-collector-assistant
 cp config.example.env .env
 ```
 
-Agent 需要先询问用户：
+Agent 需要分别询问用户两个 key 配置：
 
 ```text
-你是否有 Renaiss OS Index API key / secret？
+1. 你是否有 Alchemy API key？钱包历史 / BSC 链上分析需要它。
+2. 你是否有 Renaiss OS Index API key / secret？Index 价格套利扫描需要它。
 ```
 
-### 如果用户没有 API key
+### 3.1 配置 Alchemy API key（BSC 钱包分析需要）
 
-请提示用户可以去这里申请：
+本项目的钱包历史查询使用 **Alchemy BNB Mainnet**。RPC 地址格式是：
+
+```text
+https://bnb-mainnet.g.alchemy.com/v2/<ALCHEMY_API_KEY>
+```
+
+#### 如果用户已有 Alchemy key
+
+引导用户把 key 写入 `.env`，或通过当前运行环境的安全 secret 管理方式注入：
+
+```env
+ALCHEMY_API_KEY=your_alchemy_api_key_here
+```
+
+脚本会自动拼接 BNB Mainnet RPC URL。高级用户也可以直接写完整 URL：
+
+```env
+ALCHEMY_BNB_RPC_URL=https://bnb-mainnet.g.alchemy.com/v2/your_alchemy_api_key_here
+```
+
+#### 如果用户没有 Alchemy key
+
+请引导用户申请免费 key：
+
+1. 打开 `https://www.alchemy.com/` 并注册 / 登录。
+2. 进入 Dashboard，创建一个新的 App。
+3. Network 选择 **BNB Chain / BNB Mainnet**。
+4. 复制 API Key，填入 `.env` 的 `ALCHEMY_API_KEY=`。
+
+没有 Alchemy key 时，`decode-tx` 仍可尝试使用公开 BSC RPC 做单笔 receipt 解码；但 `wallet-report` 的完整钱包历史建议配置 Alchemy，否则只能依赖运行环境里已有的其他 wallet-history source。
+
+### 3.2 配置 Renaiss OS Index API key（可选）
+
+如果用户没有 Renaiss OS Index API key / secret，请提示用户可以去这里申请：
 
 ```text
 https://index.renaissos.com/partners
@@ -115,9 +149,7 @@ https://index.renaissos.com/partners
 
 没有 key 也可以先使用公开访问，但公开访问只有 **10 requests/day/IP**，只适合小规模测试。批量 Index 价格套利扫描建议申请 partner key。
 
-### 如果用户有 API key
-
-引导用户把 key 和 secret 写入 `.env`，或通过当前运行环境的安全 secret 管理方式注入。当前脚本会自动读取 skill 目录、当前运行目录或仓库根目录下的 `.env`：
+如果用户已有 Renaiss OS Index API key / secret，引导用户写入 `.env`，或通过当前运行环境的安全 secret 管理方式注入。当前脚本会自动读取 skill 目录、当前运行目录或仓库根目录下的 `.env`：
 
 ```env
 RENAISS_INDEX_API_KEY=
@@ -127,8 +159,8 @@ RENAISS_INDEX_API_SECRET=
 安全要求：
 
 - 不要把 `.env` 上传到 GitHub。
+- 不要把 Alchemy key、Renaiss API Secret、SSH 私钥或任何 deploy key 写进 README、Markdown、CSV、JSON 报告、日志或截图。
 - 不要在报告里输出 API Secret。
-- 不要把 API Secret 写入 Markdown、CSV、JSON 报告或截图。
 
 ---
 
@@ -163,15 +195,18 @@ python3 scripts/renaiss_index_api.py indices
 
 ### 检查钱包报告
 
+钱包历史推荐先在 `.env` 中配置 `ALCHEMY_API_KEY`。验证命令：
+
 ```bash
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address 0x032e4a8eb38843a65ce5e65131d1f99c10b03201 \
+  --history-source alchemy \
   --out outputs/wallet_report.json \
   --out-md outputs/wallet_report.md \
   --max-wallets 20
 ```
 
-如果能生成 JSON 和 Markdown 报告，说明 wallet 模块可用。
+如果能生成 JSON 和 Markdown 报告，说明 wallet 模块可用。若用户暂时没有 Alchemy key，应先按第 3.1 步申请免费 key。
 
 ---
 

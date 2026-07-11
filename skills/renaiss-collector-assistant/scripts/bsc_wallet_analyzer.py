@@ -2,11 +2,11 @@
 """BSC wallet analyzer for Renaiss Collector Assistant.
 
 Decodes individual transactions and builds Renaiss wallet-cluster reports.
-For full wallet history this helper needs an indexer. In `auto` mode it uses
-Surf wallet-history when available; with an Etherscan/BscScan key it can be
-extended to Etherscan V2 (`chainid=56`). Receipt decoding itself uses BSC RPC.
+For full wallet history this helper uses Alchemy's BNB Mainnet Transfers API
+when an Alchemy key/RPC URL is configured. Receipt decoding uses the Alchemy
+BNB RPC first, with public BSC RPC endpoints kept only as read-only fallbacks.
 """
-import argparse, base64, collections, datetime, json, os, shutil, subprocess, sys, urllib.parse, urllib.request
+import argparse, base64, collections, datetime, json, os, re, shutil, subprocess, sys, urllib.parse, urllib.request
 
 try:
     from common_env import load_dotenv_files
@@ -14,11 +14,56 @@ try:
 except Exception:
     pass
 
-RPCS = [
-    os.getenv("BSC_RPC_URL_1", "https://bsc-dataseed.binance.org/"),
-    os.getenv("BSC_RPC_URL_2", "https://bsc-dataseed1.defibit.io/"),
-    os.getenv("BSC_RPC_URL_3", "https://bsc-dataseed1.ninicoin.io/"),
-]
+def _env(name):
+    value = os.getenv(name)
+    return value.strip() if value and value.strip() else None
+
+
+def alchemy_bnb_rpc_url():
+    """Return the configured Alchemy BNB Mainnet JSON-RPC URL.
+
+    Prefer an explicit URL for advanced users, otherwise derive the endpoint
+    from the API key. Never hard-code real keys in this repository.
+    """
+    explicit = _env("ALCHEMY_BNB_RPC_URL") or _env("BNB_RPC_URL")
+    if explicit:
+        return explicit
+    key = _env("ALCHEMY_API_KEY") or _env("ALCHEMY_BNB_API_KEY")
+    if key:
+        return f"https://bnb-mainnet.g.alchemy.com/v2/{key}"
+    return None
+
+
+ALCHEMY_BNB_RPC_URL = alchemy_bnb_rpc_url()
+
+
+def _dedupe_urls(urls):
+    out = []
+    seen = set()
+    for url in urls:
+        if not url:
+            continue
+        url = str(url).strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _rpc_urls():
+    # Alchemy is primary. Public BSC endpoints remain as receipt-decoding
+    # fallbacks so decode-tx can still work before the user configures a key.
+    return _dedupe_urls([
+        ALCHEMY_BNB_RPC_URL,
+        _env("BSC_RPC_URL"),
+        os.getenv("BSC_RPC_URL_1", "https://bsc-dataseed.binance.org/"),
+        os.getenv("BSC_RPC_URL_2", "https://bsc-dataseed1.defibit.io/"),
+        os.getenv("BSC_RPC_URL_3", "https://bsc-dataseed1.ninicoin.io/"),
+    ])
+
+
+RPCS = _rpc_urls()
 
 ZERO = "0x0000000000000000000000000000000000000000"
 TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -39,21 +84,44 @@ PACK_CONTRACTS = {PACK_CURRENT, PACK_LEGACY_150, PACK_LEGACY_88, PACK_SETTLEMENT
 KNOWN_RENAISS_CONTRACTS = {USDT, NFT, SBT, MIGRATION, PACK_CURRENT, PACK_LEGACY_150, PACK_LEGACY_88, PACK_SETTLEMENT, MARKETPLACE}
 
 
-def rpc(method, params):
+def redact_secret_url(message):
+    if message is None:
+        return message
+    return re.sub(r"(https://bnb-mainnet\.g\.alchemy\.com/v2/)[A-Za-z0-9_-]+", r"\1<redacted>", str(message))
+
+
+def is_alchemy_configured():
+    return bool(ALCHEMY_BNB_RPC_URL)
+
+
+def _json_rpc_request(url, method, params, timeout=30):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    res = json.load(urllib.request.urlopen(req, timeout=timeout))
+    if "result" in res:
+        return res["result"]
+    raise RuntimeError(res.get("error") or res)
+
+
+def rpc(method, params):
     last = None
     for url in RPCS:
         if not url:
             continue
         try:
-            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-            res = json.load(urllib.request.urlopen(req, timeout=30))
-            if "result" in res:
-                return res["result"]
-            last = res.get("error")
+            return _json_rpc_request(url, method, params)
         except Exception as e:
-            last = str(e)
+            last = redact_secret_url(e)
     raise RuntimeError(last)
+
+
+def alchemy_rpc(method, params):
+    if not ALCHEMY_BNB_RPC_URL:
+        raise RuntimeError("Missing ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy BNB Mainnet.")
+    try:
+        return _json_rpc_request(ALCHEMY_BNB_RPC_URL, method, params)
+    except Exception as e:
+        raise RuntimeError(redact_secret_url(e))
 
 
 def topic_addr(t):
@@ -260,13 +328,155 @@ def surf_json(args, timeout=120):
     return json.loads(p.stdout)
 
 
+ALCHEMY_TRANSFER_CATEGORIES = ["external", "internal", "erc20", "erc721", "erc1155", "specialnft"]
+
+
+def _parse_alchemy_block_timestamp(value):
+    if not value:
+        return None, None
+    try:
+        dt = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt = dt.astimezone(datetime.timezone.utc)
+        return int(dt.timestamp()), dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return None, None
+
+
+def _merge_history_row(rows_by_hash, transfer):
+    tx_hash = transfer.get("hash")
+    if not tx_hash:
+        return
+    metadata = transfer.get("metadata") or {}
+    timestamp, time_utc = _parse_alchemy_block_timestamp(metadata.get("blockTimestamp"))
+    block_num = transfer.get("blockNum")
+    try:
+        block_number = int(block_num, 16) if isinstance(block_num, str) and block_num.startswith("0x") else int(block_num)
+    except Exception:
+        block_number = None
+    category = transfer.get("category")
+    asset = transfer.get("asset")
+    row = rows_by_hash.get(tx_hash)
+    if row is None:
+        rows_by_hash[tx_hash] = {
+            "tx_hash": tx_hash,
+            "block_number": block_number,
+            "timestamp": timestamp,
+            "time_utc": time_utc,
+            "from": (transfer.get("from") or "").lower(),
+            "to": (transfer.get("to") or "").lower(),
+            "alchemy_categories": [category] if category else [],
+            "alchemy_assets": [asset] if asset else [],
+        }
+        return
+    if block_number is not None and row.get("block_number") is None:
+        row["block_number"] = block_number
+    if timestamp is not None and row.get("timestamp") is None:
+        row["timestamp"] = timestamp
+        row["time_utc"] = time_utc
+    if category and category not in row["alchemy_categories"]:
+        row["alchemy_categories"].append(category)
+    if asset and asset not in row["alchemy_assets"]:
+        row["alchemy_assets"].append(asset)
+
+
+def fetch_wallet_history_alchemy(address, limit=100, max_pages=5):
+    """Fetch BSC wallet transaction hashes with Alchemy Transfers API.
+
+    The Transfers API is queried twice, once for outbound and once for inbound
+    transfers, then de-duplicated by transaction hash before receipt decoding.
+    """
+    if not is_alchemy_configured():
+        raise RuntimeError("Missing ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy wallet history.")
+    address = address.lower()
+    max_count = max(1, min(int(limit), 1000))
+    page_limit = max(1, int(max_pages))
+    rows_by_hash = {}
+    direction_metas = []
+    errors = []
+    has_more_last = False
+    for direction, address_key in (("from", "fromAddress"), ("to", "toAddress")):
+        page_key = None
+        pages = 0
+        transfers_seen = 0
+        direction_error = None
+        for page in range(page_limit):
+            query = {
+                "fromBlock": "0x0",
+                "toBlock": "latest",
+                "order": "desc",
+                "withMetadata": True,
+                "excludeZeroValue": False,
+                "maxCount": hex(max_count),
+                "category": ALCHEMY_TRANSFER_CATEGORIES,
+                address_key: address,
+            }
+            if page_key:
+                query["pageKey"] = page_key
+            try:
+                result = alchemy_rpc("alchemy_getAssetTransfers", [query])
+            except Exception as e:
+                direction_error = redact_secret_url(e)
+                errors.append(f"{direction}: {direction_error}")
+                break
+            pages += 1
+            transfers = result.get("transfers") or []
+            transfers_seen += len(transfers)
+            for transfer in transfers:
+                _merge_history_row(rows_by_hash, transfer)
+            page_key = result.get("pageKey")
+            if not page_key:
+                break
+        if page_key:
+            has_more_last = True
+        direction_metas.append({
+            "direction": direction,
+            "pages_fetched": pages,
+            "transfers_seen": transfers_seen,
+            "has_more": bool(page_key),
+            "error": direction_error,
+        })
+    if errors and not rows_by_hash:
+        raise RuntimeError("Alchemy wallet history failed: " + "; ".join(errors))
+    rows = sorted(
+        rows_by_hash.values(),
+        key=lambda r: (r.get("block_number") if r.get("block_number") is not None else -1, r.get("tx_hash") or ""),
+        reverse=True,
+    )
+    return {
+        "source": "alchemy_getAssetTransfers",
+        "data": rows,
+        "meta": {
+            "pages_fetched": sum(m["pages_fetched"] for m in direction_metas),
+            "limit_per_page": max_count,
+            "rows": len(rows),
+            "has_more_last": has_more_last,
+            "directions": direction_metas,
+        },
+        "error": "; ".join(errors) if errors else None,
+    }
+
+
 def fetch_wallet_history(address, limit=100, source="auto", max_pages=5):
     """Fetch paginated BSC wallet history.
 
-    Surf wallet-history is cursor-paginated through `--before`. A single page is
-    not enough for active Renaiss collectors, so wallet reports page by default
-    and de-duplicate by tx_hash.
+    `auto` prefers Alchemy when `ALCHEMY_API_KEY` / `ALCHEMY_BNB_RPC_URL` is
+    configured. Surf remains a fallback for environments that already provide a
+    wallet-history index.
     """
+    alchemy_error = None
+    if source in ("auto", "alchemy"):
+        if is_alchemy_configured():
+            try:
+                return fetch_wallet_history_alchemy(address, limit=limit, max_pages=max_pages)
+            except Exception as e:
+                alchemy_error = redact_secret_url(e)
+                if source == "alchemy":
+                    raise RuntimeError(alchemy_error)
+        elif source == "alchemy":
+            raise RuntimeError("Missing ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy wallet history.")
+
     if source in ("auto", "surf") and is_surf_available():
         all_rows = []
         seen_hashes = set()
@@ -309,13 +519,52 @@ def fetch_wallet_history(address, limit=100, source="auto", max_pages=5):
             },
             "error": last_error,
         }
-    raise RuntimeError("No wallet-history source available. Install Surf CLI or add Etherscan V2/BscScan API support.")
+    if alchemy_error:
+        raise RuntimeError(f"Alchemy wallet history failed and no fallback source is available: {alchemy_error}")
+    raise RuntimeError("No wallet-history source available. Set ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy BNB Mainnet wallet history.")
+
+
+def _erc20_balance(token, owner):
+    data = "0x70a08231" + owner.lower().replace("0x", "").rjust(64, "0")
+    return int(alchemy_rpc("eth_call", [{"to": token, "data": data}, "latest"]), 16)
+
+
+def fetch_wallet_detail_alchemy(address):
+    address = address.lower()
+    data = {"evm_balance": {"total_usd": None, "chain_balances": []}, "evm_tokens": [], "nft": []}
+    errors = []
+    try:
+        native_wei = int(alchemy_rpc("eth_getBalance", [address, "latest"]), 16)
+        data["evm_balance"]["chain_balances"].append({
+            "chain": "bsc",
+            "native_symbol": "BNB",
+            "native_balance_wei": str(native_wei),
+            "native_balance": native_wei / 1e18,
+        })
+    except Exception as e:
+        errors.append("native_balance: " + str(redact_secret_url(e)))
+    try:
+        usdt_raw = _erc20_balance(USDT, address)
+        data["evm_tokens"].append({
+            "chain": "bsc",
+            "contract": USDT,
+            "symbol": "USDT",
+            "balance_raw": str(usdt_raw),
+            "balance": usdt_raw / 1e18,
+        })
+    except Exception as e:
+        errors.append("usdt_balance: " + str(redact_secret_url(e)))
+    return {"source": "alchemy_bnb_rpc", "data": data, "meta": {}, "error": "; ".join(errors) if errors else None}
 
 
 def fetch_wallet_detail(address, source="auto"):
+    if source in ("auto", "alchemy") and is_alchemy_configured():
+        return fetch_wallet_detail_alchemy(address)
     if source in ("auto", "surf") and is_surf_available():
         j = surf_json(["surf", "wallet-detail", "--address", address, "--chain", "bsc", "--fields", "balance,tokens,nft,labels", "--json"])
         return {"source": "surf_wallet_detail", "data": j.get("data") or {}, "meta": j.get("meta") or {}, "error": j.get("error")}
+    if source == "alchemy":
+        return {"source": None, "data": {}, "meta": {}, "error": "Missing ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy wallet detail."}
     return {"source": None, "data": {}, "meta": {}, "error": "wallet-detail source unavailable"}
 
 
@@ -590,7 +839,7 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
         "data_notes": [
             "Wallet cluster is inferred from LegacyAssetMigrationHelper migration transactions.",
             "Migration transfers inside the cluster are excluded from net USDT flow.",
-            "Wallet history is paginated with --before; very active wallets may still need a higher --max-pages or a dedicated indexer/BscScan V2 export.",
+            "Wallet history is collected through Alchemy Transfers API when configured; very active wallets may still need a higher --max-pages or a dedicated archival/indexer export.",
         ],
     }
 
@@ -668,9 +917,12 @@ def build_wallet_report(address, limit=100, source="auto", max_pages=5, max_wall
         summary.setdefault("data_notes", []).append("Wallet history pagination did not fully exhaust for at least one scanned wallet, or the history source returned an error; spend/income/net spend are partial.")
     if decode_error_count:
         summary.setdefault("data_notes", []).append("One or more transaction receipts failed to decode; spend/income/net spend are partial.")
+    history_sources = sorted(set(h.get("source") for h in history_by_wallet.values() if h.get("source")))
+    receipt_source = "Alchemy BNB RPC receipts" if is_alchemy_configured() else "BSC RPC receipts"
+    source_label = (", ".join(history_sources) if history_sources else "wallet-history index") + f" + {receipt_source}"
     return {
         "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "source": "BSC wallet-history index + BSC RPC receipts",
+        "source": source_label,
         "summary": summary,
         "history_meta": {w: h.get("meta") for w, h in history_by_wallet.items()},
         "decoded_transactions": list(decoded_by_hash.values()),
@@ -777,7 +1029,7 @@ def main():
     w.add_argument("--limit", type=int, default=100)
     w.add_argument("--max-pages", type=int, default=5, help="wallet-history pages to fetch per wallet via before cursor")
     w.add_argument("--max-wallets", type=int, default=20, help="maximum wallet-cluster addresses to scan before marking the report partial")
-    w.add_argument("--history-source", choices=["auto", "surf"], default="auto")
+    w.add_argument("--history-source", choices=["auto", "alchemy", "surf"], default="auto", help="auto prefers Alchemy when ALCHEMY_API_KEY/ALCHEMY_BNB_RPC_URL is configured")
     w.add_argument("--out")
     w.add_argument("--out-md")
     w.add_argument("--verbose", action="store_true")

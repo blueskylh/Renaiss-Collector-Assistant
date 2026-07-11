@@ -64,7 +64,31 @@ renaiss --help
 
 Important: Renaiss CLI defaults to `https://api.renaiss.xyz` and calls `/v0/...` Marketplace routes. Do **not** point Renaiss CLI at `https://api.renaissos.com`; Renaiss OS Index API uses `/v1/...` and is separate.
 
-### 3. Configure Renaiss OS Index API
+### 3. Configure Alchemy BNB Mainnet
+
+Wallet-history and BSC receipt decoding should use Alchemy first.
+
+Use environment variables or `.env`:
+
+```bash
+export ALCHEMY_API_KEY="your_alchemy_api_key_here"
+```
+
+```env
+ALCHEMY_API_KEY=
+# Optional full override; otherwise scripts derive https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}
+ALCHEMY_BNB_RPC_URL=
+```
+
+If the user has no Alchemy key, tell them:
+
+- Apply for a free key at `https://www.alchemy.com/`.
+- Create an app on **BNB Chain / BNB Mainnet**.
+- Put only the key in `.env` / secret storage; never commit a real key.
+
+Never store Alchemy keys, SSH private keys, or deploy keys in reports, logs, CSV files, screenshots, Markdown docs, or public repositories.
+
+### 4. Configure Renaiss OS Index API
 
 Renaiss Index API base URL:
 
@@ -102,7 +126,7 @@ Every report must mark the data source:
 |---|---|
 | Marketplace, card detail, packs, ask/FMV from CLI | `数据来源：Renaiss CLI` |
 | Search, indices, card detail, trades, FMV series, cert lookup | `数据来源：Renaiss OS Index API` |
-| Wallet migration, packs, NFT/SBT transfers, wallet PnL | `数据来源：BSC RPC / BscScan` |
+| Wallet migration, packs, NFT/SBT transfers, wallet PnL | `数据来源：Alchemy Transfers API / Alchemy BNB RPC` |
 | Mixed reports | List all sources used |
 
 Use UTC timestamps in `YYYY-MM-DD HH:MM UTC` format.
@@ -411,6 +435,7 @@ Use the wallet report command for an address-level test or user report:
 ```bash
 python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --address <wallet> \
+  --history-source alchemy \
   --out outputs/wallet_report.json \
   --out-md outputs/wallet_report.md
 ```
