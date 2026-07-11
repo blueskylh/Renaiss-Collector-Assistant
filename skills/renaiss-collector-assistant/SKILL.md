@@ -1,5 +1,6 @@
 ---
 name: renaiss-collector-assistant
+version: "0.1.10"
 description: >-
   Renaiss Collector Assistant: use Renaiss CLI, Renaiss OS Index API, and BSC chain data to query Renaiss cards, scan marketplace listings, find sequential PSA cert candidates, detect arbitrage opportunities, monitor card prices, analyze migrated Renaiss wallets, and assist Renaiss Artist image creation.
 tools:

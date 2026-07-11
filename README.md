@@ -21,6 +21,10 @@
 
 ## 🎬 产品演示
 
+<p align="center">
+  <a href="media/demo/renaiss-collector-assistant-product-demo.mp4"><strong>🎥 点击观看产品宣传视频（MP4）</strong></a>
+</p>
+
 以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描、PSA 连号机会和 Artist Helper。
 
 | 场景 | 能力亮点 |
@@ -176,8 +180,6 @@ Agent 安装文档：[`AGENT_INSTALL.md`](./AGENT_INSTALL.md)
 | 🏅 **SBT 稀有度排名** | 基于 RenaissSBT ERC-1155 转账重建每个 SBT ID 的当前 holder 数和 supply。 | 想判断 SBT 稀有程度的收藏家 |
 | 🎨 **Artist Helper** | 生成带有 Renaiss 元素的 TCG 卡牌线稿和彩色参考图，帮助用户获取 **Renaiss Artist SBT**。 | 想画 Artist SBT，但不想从零构图的用户 |
 
-> 后续可以在这一段下面继续添加功能截图、视频、案例和更详细说明。建议素材放在 `media/images/`、`media/videos/` 或 `media/product/`。
-
 ---
 
 ## 🔎 Renaiss OS Index API 支持
@@ -317,7 +319,7 @@ python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
 
 - `AGENT.md`：给 agent / runner 读取的仓库级规则；
 - `AGENT_INSTALL.md`：详细安装指南；
-- `media/`：后续产品截图、演示视频和宣传素材；
+- `media/`：产品截图、演示视频和宣传素材；
 - `skills/renaiss-collector-assistant/`：agent 需要安装的 skill 源码目录。
 
 ---
@@ -332,18 +334,6 @@ python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
 | Alchemy API key | 钱包历史 / BSC 链上分析建议配置；使用 BNB Mainnet 免费 key |
 | Renaiss OS Index API key | 可选；批量 Index 价格套利扫描建议使用 |
 | Wallet scan limit | 钱包报告默认最多扫描 20 个 cluster 地址，触顶会标记 partial |
-
----
-
-## 🖼 即将补充
-
-<table>
-<tr>
-<td align="center" width="33%"><b>产品截图</b><br/>钱包报告、连号扫描、套利扫描</td>
-<td align="center" width="33%"><b>演示视频</b><br/>从安装到运行完整流程</td>
-<td align="center" width="33%"><b>收藏家案例</b><br/>真实钱包、pack、SBT 分析案例</td>
-</tr>
-</table>
 
 ---
 
