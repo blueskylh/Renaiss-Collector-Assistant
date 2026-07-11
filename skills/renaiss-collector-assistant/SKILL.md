@@ -440,7 +440,7 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --out-md outputs/wallet_report.md
 ```
 
-The command must build `wallet_cluster`, detect `legacy_wallets`, set `current_wallet`, and exclude internal migration transfers from net USDT flow. If it finds a migration transaction while analyzing the supplied wallet, it must fetch the paired legacy/current wallet and merge both histories before summarizing Renaiss activity.
+The command must build `wallet_cluster`, detect `legacy_wallets`, set `current_wallet`, and exclude internal migration transfers from net USDT flow. If it finds a migration transaction while analyzing the supplied wallet, it must fetch the paired legacy/current wallet and merge both histories before summarizing Renaiss activity. Pack analysis must support batch opens by inferring integer multiples of each pack's unit price (currently 1/5/10, but do not hard-code only those values). Wallet reports must include current RenaissSBT holdings and names when Alchemy history is available.
 
 Wallet classification:
 
@@ -451,6 +451,17 @@ Wallet classification:
 | Marketplace buy/sell | Through `RENAISS_MARKETPLACE_PROXY`; inspect NFT direction and USDT direction |
 | SBT migration | RenaissSBT TransferBatch old -> zero and zero -> new via migration helper |
 | Not Renaiss | ERC4337 EntryPoint, unrelated airdrops, unrelated tokens, bridges/CEX unless part of a classified Renaiss tx |
+
+For SBT rarity / holder-count ranking, use:
+
+```bash
+python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
+  --max-pages 500 \
+  --out outputs/sbt_holder_ranking.json \
+  --out-csv outputs/sbt_holder_ranking.csv
+```
+
+If `complete=false`, the holder ranking is partial and `--max-pages` must be increased until the full RenaissSBT transfer history is scanned.
 
 Report wallet stats:
 

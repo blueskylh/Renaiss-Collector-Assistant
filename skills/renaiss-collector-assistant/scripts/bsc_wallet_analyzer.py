@@ -6,7 +6,7 @@ For full wallet history this helper uses Alchemy's BNB Mainnet Transfers API
 when an Alchemy key/RPC URL is configured. Receipt decoding uses the Alchemy
 BNB RPC first, with public BSC RPC endpoints kept only as read-only fallbacks.
 """
-import argparse, base64, collections, datetime, ipaddress, json, os, re, shutil, socket, subprocess, sys, urllib.parse, urllib.request
+import argparse, base64, collections, csv, datetime, ipaddress, json, os, re, shutil, socket, subprocess, sys, urllib.parse, urllib.request
 
 try:
     from common_env import load_dotenv_files
@@ -68,6 +68,10 @@ RPCS = _rpc_urls()
 ZERO = "0x0000000000000000000000000000000000000000"
 TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 TRANSFER_SINGLE = "0xc3d58168c5ae7397731d063d5bbf3d6578544278c03a1d1289612f2d341b0c62"
+# RenaissSBT currently emits an ERC-1155-like single transfer event whose
+# topic starts with the standard TransferSingle selector prefix but differs in
+# the full topic hash. Decode it with the same indexed/data layout.
+RENAISS_TRANSFER_SINGLE_PREFIX = "0xc3d58168"
 TRANSFER_BATCH = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
 USDT = os.getenv("BSC_USDT_CONTRACT", "0x55d398326f99059ff775485246999027b3197955").lower()
 NFT = os.getenv("RENAISS_NFT_CONTRACT", "0xf8646a3ca093e97bb404c3b25e675c0394dd5b30").lower()
@@ -156,6 +160,24 @@ def decode_transfer_single(data):
     if len(w) >= 2:
         return w[0], w[1]
     return None, None
+
+
+def is_sbt_transfer_single_topic(topic):
+    return topic == TRANSFER_SINGLE or str(topic or "").startswith(RENAISS_TRANSFER_SINGLE_PREFIX)
+
+
+def int_auto(value, default=0):
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return int(text, 16) if text.startswith("0x") else int(text)
+    except Exception:
+        return default
 
 
 def decode_abi_string(result_hex):
@@ -273,14 +295,38 @@ def load_pack_catalog():
         return defaults
 
 
-def infer_pack_type(amount_usdt, catalog):
+def infer_pack_purchase(amount_usdt, catalog):
+    """Infer pack slug and pack count from a USDT spend.
+
+    Renaiss supports batch opens (currently 1/5/10 packs, with future multiples
+    possible). Match total spend to unit pack prices by integer multiples.
+    """
     if amount_usdt is None:
-        return "unknown"
+        return {"pack_type": "unknown", "pack_count": None, "unit_price_usdt": None, "batch_multiple": None}
+    amount = float(amount_usdt)
+    best = None
     for p in catalog:
         price = p.get("price_usdt")
-        if price is not None and abs(float(amount_usdt) - float(price)) < 0.01:
-            return p.get("slug") or p.get("name") or f"{price:g} USDT pack"
-    return f"legacy-or-unknown-{float(amount_usdt):g}-usdt-pack"
+        if price is None or float(price) <= 0:
+            continue
+        multiple = amount / float(price)
+        nearest = round(multiple)
+        if nearest >= 1 and abs(amount - nearest * float(price)) < 0.01:
+            candidate = {
+                "pack_type": p.get("slug") or p.get("name") or f"{float(price):g} USDT pack",
+                "pack_count": int(nearest),
+                "unit_price_usdt": float(price),
+                "batch_multiple": int(nearest),
+            }
+            if best is None or candidate["pack_count"] < best["pack_count"]:
+                best = candidate
+    if best:
+        return best
+    return {"pack_type": f"legacy-or-unknown-{amount:g}-usdt-pack", "pack_count": None, "unit_price_usdt": None, "batch_multiple": None}
+
+
+def infer_pack_type(amount_usdt, catalog):
+    return infer_pack_purchase(amount_usdt, catalog)["pack_type"]
 
 
 def block_time(block_hex):
@@ -319,7 +365,7 @@ def decode_tx(tx_hash):
         elif addr == SBT and topics[0] == TRANSFER_BATCH and len(topics) >= 4:
             ids, vals = decode_transfer_batch(l.get("data", "0x"))
             out["renaiss_sbt_batches"].append({"operator": topic_addr(topics[1]).lower(), "from": topic_addr(topics[2]).lower(), "to": topic_addr(topics[3]).lower(), "ids": ids, "values": vals})
-        elif addr == SBT and topics[0] == TRANSFER_SINGLE and len(topics) >= 4:
+        elif addr == SBT and is_sbt_transfer_single_topic(topics[0]) and len(topics) >= 4:
             sid, val = decode_transfer_single(l.get("data", "0x"))
             out["renaiss_sbt_singles"].append({"operator": topic_addr(topics[1]).lower(), "from": topic_addr(topics[2]).lower(), "to": topic_addr(topics[3]).lower(), "id": sid, "value": val})
     out["log_contract_counts"] = dict(out["log_contract_counts"])
@@ -594,6 +640,112 @@ def fetch_wallet_detail(address, source="auto"):
     return {"source": None, "data": {}, "meta": {}, "error": "wallet-detail source unavailable"}
 
 
+def alchemy_erc1155_transfers(*, address=None, direction=None, contract=SBT, max_pages=50, limit=1000, order="asc"):
+    if not is_alchemy_configured():
+        raise RuntimeError("Missing ALCHEMY_API_KEY or ALCHEMY_BNB_RPC_URL for Alchemy ERC-1155 transfers.")
+    rows = []
+    page_key = None
+    pages = 0
+    while pages < max(1, int(max_pages)):
+        query = {
+            "fromBlock": "0x0",
+            "toBlock": "latest",
+            "order": order,
+            "withMetadata": True,
+            "excludeZeroValue": False,
+            "maxCount": hex(max(1, min(int(limit), 1000))),
+            "category": ["erc1155"],
+            "contractAddresses": [contract],
+        }
+        if address and direction == "from":
+            query["fromAddress"] = address.lower()
+        elif address and direction == "to":
+            query["toAddress"] = address.lower()
+        elif address:
+            raise ValueError("direction must be 'from' or 'to' when address is supplied")
+        if page_key:
+            query["pageKey"] = page_key
+        result = alchemy_rpc("alchemy_getAssetTransfers", [query])
+        rows.extend(result.get("transfers") or [])
+        pages += 1
+        page_key = result.get("pageKey")
+        if not page_key:
+            break
+    return {"transfers": rows, "pages_fetched": pages, "has_more": bool(page_key)}
+
+
+def transfer_sort_key(t):
+    return (int_auto(t.get("blockNum")), int_auto(str(t.get("uniqueId") or "").split(":log:")[-1], 0), t.get("hash") or "")
+
+
+def erc1155_items_from_transfer(t):
+    items = []
+    for item in t.get("erc1155Metadata") or []:
+        token_id = int_auto(item.get("tokenId"), None)
+        value = int_auto(item.get("value"), 0)
+        if token_id is not None and value:
+            items.append((token_id, value))
+    return items
+
+
+def sbt_transfer_balance_delta_for_owner(owner, transfer):
+    owner = owner.lower()
+    delta = collections.Counter()
+    f = (transfer.get("from") or "").lower()
+    t = (transfer.get("to") or "").lower()
+    for token_id, value in erc1155_items_from_transfer(transfer):
+        if f == owner:
+            delta[token_id] -= value
+        if t == owner:
+            delta[token_id] += value
+    return delta
+
+
+def fetch_sbt_balances_for_owner(owner, max_pages=50):
+    owner = owner.lower()
+    by_uid = {}
+    metas = []
+    for direction in ("from", "to"):
+        result = alchemy_erc1155_transfers(address=owner, direction=direction, max_pages=max_pages, order="asc")
+        metas.append({"direction": direction, "pages_fetched": result["pages_fetched"], "rows": len(result["transfers"]), "has_more": result["has_more"]})
+        for t in result["transfers"]:
+            by_uid[t.get("uniqueId") or f"{t.get('hash')}:{len(by_uid)}"] = t
+    balances = collections.Counter()
+    for t in sorted(by_uid.values(), key=transfer_sort_key):
+        balances.update(sbt_transfer_balance_delta_for_owner(owner, t))
+    holdings = [{"id": token_id, "balance": bal} for token_id, bal in sorted(balances.items()) if bal > 0]
+    meta_by_id = {m.get("id"): m for m in resolve_sbt_metadata([h["id"] for h in holdings])} if holdings else {}
+    for h in holdings:
+        meta = meta_by_id.get(h["id"]) or {}
+        h["name"] = meta.get("name")
+        h["description"] = meta.get("description")
+        h["uri"] = meta.get("uri")
+    return {"owner": owner, "holdings": holdings, "sbt_count": sum(h["balance"] for h in holdings), "unique_sbt_types": len(holdings), "meta": {"sources": metas, "has_more": any(m["has_more"] for m in metas)}}
+
+
+def build_sbt_holder_ranking(max_pages=500, limit=1000):
+    result = alchemy_erc1155_transfers(max_pages=max_pages, limit=limit, order="asc")
+    balances = collections.defaultdict(collections.Counter)
+    for t in sorted(result["transfers"], key=transfer_sort_key):
+        f = (t.get("from") or "").lower()
+        to = (t.get("to") or "").lower()
+        for token_id, value in erc1155_items_from_transfer(t):
+            if f and f != ZERO:
+                balances[token_id][f] -= value
+            if to and to != ZERO:
+                balances[token_id][to] += value
+    ids = sorted(balances)
+    meta_by_id = {m.get("id"): m for m in resolve_sbt_metadata(ids)} if ids else {}
+    rows = []
+    for token_id in ids:
+        holder_count = sum(1 for bal in balances[token_id].values() if bal > 0)
+        supply = sum(bal for bal in balances[token_id].values() if bal > 0)
+        meta = meta_by_id.get(token_id) or {}
+        rows.append({"id": token_id, "name": meta.get("name"), "holder_count": holder_count, "current_supply": supply})
+    rows.sort(key=lambda r: (r["holder_count"], r["id"]))
+    return {"generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"), "source": "Alchemy ERC-1155 transfers + RenaissSBT metadata", "complete": not result["has_more"], "pages_fetched": result["pages_fetched"], "transfers_scanned": len(result["transfers"]), "ranking": rows}
+
+
 def migration_edges(decoded):
     """Infer strict old_wallet -> new_wallet migration edges from one transaction.
 
@@ -751,7 +903,9 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
     marketplace_buys = 0; marketplace_sells = 0; pack_buys = 0; buyback_candidates = 0
     marketplace_buy_spend_usdt = 0.0; marketplace_sell_income_usdt = 0.0
     pack_spend_usdt = 0.0; buyback_income_usdt = 0.0
-    pack_type_counts = collections.Counter(); pack_type_spend = collections.Counter()
+    pack_count_total = 0
+    pack_type_counts = collections.Counter(); pack_type_spend = collections.Counter(); pack_type_pack_counts = collections.Counter()
+    pack_open_records = []
     pack_catalog = load_pack_catalog()
     renaiss_related_txs = set()
     internal_migration_usdt = 0.0
@@ -803,15 +957,37 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
             if tx_usdt_out and (tx_nft_in or selector in {"0x3233aac2", "0x644f5c2d"} or (d.get("to") or "").lower() in PACK_CONTRACTS):
                 pack_buys += 1
                 pack_spend_usdt += tx_usdt_out
-                pack_type = infer_pack_type(tx_usdt_out, pack_catalog)
+                purchase = infer_pack_purchase(tx_usdt_out, pack_catalog)
+                pack_type = purchase["pack_type"]
+                pack_count = purchase.get("pack_count") or (tx_nft_in if tx_nft_in else 0)
+                pack_count_total += pack_count
                 pack_type_counts[pack_type] += 1
                 pack_type_spend[pack_type] += tx_usdt_out
+                if pack_count:
+                    pack_type_pack_counts[pack_type] += pack_count
+                pack_open_records.append({
+                    "tx_hash": h,
+                    "time_utc": d.get("time_utc"),
+                    "amount_usdt": tx_usdt_out,
+                    "pack_type": pack_type,
+                    "pack_count": purchase.get("pack_count"),
+                    "batch_multiple": purchase.get("batch_multiple"),
+                    "unit_price_usdt": purchase.get("unit_price_usdt"),
+                    "nft_received_count": tx_nft_in,
+                })
             # Buyback/sell-back flows can be NFT out + USDT in, or legacy payout-only selector 0xb24f1607.
             if tx_usdt_in and (tx_nft_out or selector in {"0xb24f1607"} or (d.get("from") or "").lower() in PACK_CONTRACTS):
                 buyback_candidates += 1
                 buyback_income_usdt += tx_usdt_in
 
     sbt_metadata = resolve_sbt_metadata(sbt_ids) if sbt_ids else []
+    cluster_sbt_holdings = {}
+    for wallet in cluster:
+        try:
+            cluster_sbt_holdings[wallet] = fetch_sbt_balances_for_owner(wallet)
+        except Exception as e:
+            cluster_sbt_holdings[wallet] = {"owner": wallet, "holdings": [], "sbt_count": 0, "unique_sbt_types": 0, "error": str(redact_secret_url(e))}
+    current_wallet_sbt_holdings = cluster_sbt_holdings.get(current_wallet, {"holdings": [], "sbt_count": 0, "unique_sbt_types": 0})
     balances = {}
     for w, detail in wallet_details.items():
         data = detail.get("data") or {}
@@ -843,7 +1019,10 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
         "marketplace_sell_income_usdt": marketplace_sell_income_usdt,
         "pack_buys": pack_buys,
         "pack_spend_usdt": pack_spend_usdt,
+        "pack_count_total": pack_count_total,
+        "pack_open_records": pack_open_records,
         "pack_type_counts": dict(pack_type_counts),
+        "pack_type_pack_counts": dict(pack_type_pack_counts),
         "pack_type_spend_usdt": dict(pack_type_spend),
         "active_pack_catalog": pack_catalog,
         "buyback_candidates": buyback_candidates,
@@ -854,6 +1033,10 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
         "renaiss_nft_out_token_ids": nft_out,
         "sbt_ids_seen": sorted(sbt_ids),
         "sbt_metadata": sbt_metadata,
+        "current_wallet_sbt_count": current_wallet_sbt_holdings.get("sbt_count", 0),
+        "current_wallet_unique_sbt_types": current_wallet_sbt_holdings.get("unique_sbt_types", 0),
+        "current_wallet_sbt_holdings": current_wallet_sbt_holdings.get("holdings", []),
+        "cluster_sbt_holdings": cluster_sbt_holdings,
         "total_spend_usdt": pack_spend_usdt + marketplace_buy_spend_usdt,
         "total_income_usdt": buyback_income_usdt + marketplace_sell_income_usdt,
         "net_spend_usdt": (pack_spend_usdt + marketplace_buy_spend_usdt) - (buyback_income_usdt + marketplace_sell_income_usdt),
@@ -866,6 +1049,8 @@ def summarize_cluster(primary, history_by_wallet, decoded_by_hash, wallet_detail
             "Wallet cluster is inferred from LegacyAssetMigrationHelper migration transactions.",
             "Migration transfers inside the cluster are excluded from net USDT flow.",
             "Wallet history is collected through Alchemy Transfers API when configured; very active wallets may still need a higher --max-pages or a dedicated archival/indexer export.",
+            "Pack count inference supports batch opens by matching USDT spend to integer multiples of active pack prices.",
+            "Current SBT holdings are reconstructed from RenaissSBT ERC-1155 transfer history; incomplete Alchemy pagination makes SBT counts partial.",
         ],
     }
 
@@ -1001,6 +1186,7 @@ def write_wallet_markdown(report, out_md):
     for k in ["decoded_tx_count", "renaiss_related_tx_count", "marketplace_buys", "marketplace_sells", "pack_buys", "buyback_candidates", "renaiss_nft_in_count", "renaiss_nft_out_count"]:
         lines.append(f"| {k} | {s[k]} |")
     lines.append(f"| Pack spend | {s['pack_spend_usdt']:.6f} USDT |")
+    lines.append(f"| Inferred pack count | {s.get('pack_count_total', 0)} |")
     lines.append(f"| Buyback income | {s['buyback_income_usdt']:.6f} USDT |")
     lines.append(f"| Marketplace buy spend | {s['marketplace_buy_spend_usdt']:.6f} USDT |")
     lines.append(f"| Marketplace sell income | {s['marketplace_sell_income_usdt']:.6f} USDT |")
@@ -1014,16 +1200,23 @@ def write_wallet_markdown(report, out_md):
     lines.append("## Pack Types")
     lines.append("")
     if s.get('pack_type_counts'):
-        lines.append("| Pack type | Count | Spend USDT |")
-        lines.append("|---|---:|---:|")
+        lines.append("| Pack type | Transactions | Inferred packs | Spend USDT |")
+        lines.append("|---|---:|---:|---:|")
         for name, count in s['pack_type_counts'].items():
-            lines.append(f"| {name} | {count} | {s['pack_type_spend_usdt'].get(name, 0):.6f} |")
+            lines.append(f"| {name} | {count} | {s.get('pack_type_pack_counts', {}).get(name, 0)} | {s['pack_type_spend_usdt'].get(name, 0):.6f} |")
     else:
         lines.append("No pack type inferred.")
     lines.append("")
     lines.append("## SBT")
     lines.append("")
-    if s.get('sbt_metadata'):
+    if s.get('current_wallet_sbt_holdings'):
+        lines.append(f"Current wallet SBT count: {s.get('current_wallet_sbt_count', 0)} across {s.get('current_wallet_unique_sbt_types', 0)} types.")
+        lines.append("")
+        lines.append("| ID | Name | Balance |")
+        lines.append("|---:|---|---:|")
+        for item in s['current_wallet_sbt_holdings']:
+            lines.append(f"| {item.get('id')} | {item.get('name') or 'unknown'} | {item.get('balance')} |")
+    elif s.get('sbt_metadata'):
         lines.append("| ID | Name |")
         lines.append("|---:|---|")
         for item in s['sbt_metadata']:
@@ -1051,6 +1244,21 @@ def cmd_wallet_report(args):
     print(json.dumps(report if args.verbose else report["summary"], ensure_ascii=False, indent=2))
 
 
+def cmd_sbt_holder_ranking(args):
+    report = build_sbt_holder_ranking(max_pages=args.max_pages, limit=args.limit)
+    if args.out:
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+    if args.out_csv:
+        os.makedirs(os.path.dirname(args.out_csv) or ".", exist_ok=True)
+        with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["id", "name", "holder_count", "current_supply"])
+            writer.writeheader()
+            writer.writerows(report["ranking"])
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1066,6 +1274,12 @@ def main():
     w.add_argument("--out-md")
     w.add_argument("--verbose", action="store_true")
     w.set_defaults(func=cmd_wallet_report)
+    r = sub.add_parser("sbt-holder-ranking", help="Reconstruct current holder counts for each RenaissSBT ID from ERC-1155 transfer history")
+    r.add_argument("--max-pages", type=int, default=500, help="maximum Alchemy transfer pages to scan; increase until complete=true")
+    r.add_argument("--limit", type=int, default=1000, help="Alchemy transfers per page, max 1000")
+    r.add_argument("--out")
+    r.add_argument("--out-csv")
+    r.set_defaults(func=cmd_sbt_holder_ranking)
     args = p.parse_args()
     args.func(args)
 

@@ -398,6 +398,26 @@ class CoreLogicTests(unittest.TestCase):
         self.assertTrue(summary["history_scan_truncated"])
         self.assertIn(a, summary["history_errors"])
 
+    def test_pack_purchase_infers_batch_multiples(self):
+        catalog = [{"slug": "omega", "price_usdt": 48.0}, {"slug": "champion-pack", "price_usdt": 100.0}]
+        five = wallet.infer_pack_purchase(240.0, catalog)
+        ten = wallet.infer_pack_purchase(480.0, catalog)
+        self.assertEqual(five["pack_type"], "omega")
+        self.assertEqual(five["pack_count"], 5)
+        self.assertEqual(ten["pack_count"], 10)
+
+    def test_renaiss_custom_sbt_single_topic_prefix_decodes(self):
+        self.assertTrue(wallet.is_sbt_transfer_single_topic("0xc3d58168" + "0" * 56))
+        sid, val = wallet.decode_transfer_single("0x" + f"{199:064x}" + f"{1:064x}")
+        self.assertEqual((sid, val), (199, 1))
+
+    def test_sbt_transfer_balance_delta_for_owner(self):
+        owner = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        transfer = {"from": wallet.ZERO, "to": owner, "erc1155Metadata": [{"tokenId": "0xc7", "value": "0x01"}]}
+        self.assertEqual(wallet.sbt_transfer_balance_delta_for_owner(owner, transfer)[199], 1)
+        transfer_out = {"from": owner, "to": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "erc1155Metadata": [{"tokenId": "0xc7", "value": "0x01"}]}
+        self.assertEqual(wallet.sbt_transfer_balance_delta_for_owner(owner, transfer_out)[199], -1)
+
 
 if __name__ == "__main__":
     unittest.main()

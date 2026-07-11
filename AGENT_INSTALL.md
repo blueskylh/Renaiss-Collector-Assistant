@@ -348,6 +348,17 @@ python3 scripts/renaiss_cli_tools.py arbitrage-scan \
   --out outputs/arbitrage_candidates.csv
 ```
 
+### SBT holder 稀有度排名
+
+```bash
+python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
+  --max-pages 500 \
+  --out outputs/sbt_holder_ranking.json \
+  --out-csv outputs/sbt_holder_ranking.csv
+```
+
+如果输出 `complete=false`，说明 RenaissSBT 转账历史还没扫完，需要提高 `--max-pages` 后重跑。该功能通过当前 ERC-1155 余额重建每个 SBT ID 的 holder 数，可用于判断 SBT 稀有程度。
+
 ### Pack 监控数据源
 
 ```bash

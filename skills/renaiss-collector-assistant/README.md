@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.9`
+Version: `0.1.10`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -123,7 +123,18 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
   --max-wallets 20
 ```
 
-`wallet-report` 会先通过 Alchemy 查询输入地址的钱包历史，发现 `LegacyAssetMigrationHelper` 迁移交易后，把旧钱包和新钱包合并成 `wallet_cluster`，并排除迁移内部转账后统计 Renaiss NFT、SBT、Marketplace、Pack 和 USDT 流向。
+`wallet-report` 会先通过 Alchemy 查询输入地址的钱包历史，发现 `LegacyAssetMigrationHelper` 迁移交易后，把旧钱包和新钱包合并成 `wallet_cluster`，并排除迁移内部转账后统计 Renaiss NFT、当前 SBT 持仓、Marketplace、Pack 和 USDT 流向。批量开包会按 pack 单价推断 1/5/10 或未来其他整数倍的 pack 数量。
+
+查询每个 RenaissSBT 当前 holder 数排名，用来判断 SBT 稀有程度：
+
+```bash
+python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
+  --max-pages 500 \
+  --out outputs/sbt_holder_ranking.json \
+  --out-csv outputs/sbt_holder_ranking.csv
+```
+
+如果输出里的 `complete=false`，说明 Alchemy 仍有后续分页，需要提高 `--max-pages` 后重跑。
 
 ## 重要规则
 
