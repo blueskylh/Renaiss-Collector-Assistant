@@ -4,6 +4,8 @@
 
 ### 面向 Renaiss 收藏家的 AI Skill：查卡、看钱包、追踪开包、发现连号 PSA 机会和市场价差。
 
+本Skill旨在将AI能力引入Reniass生态，赋能社区成员便捷地参与项目、打通数据壁垒，并降低AI使用门槛，让每位成员都能切实享受到技术红利。
+
 ![Version](https://img.shields.io/badge/version-v0.1.10-black?style=for-the-badge)
 ![Renaiss](https://img.shields.io/badge/Renaiss-Collector%20Assistant-6C5CE7?style=for-the-badge)
 ![Multi Agent](https://img.shields.io/badge/Multi--Agent-Ready-00B894?style=for-the-badge)
