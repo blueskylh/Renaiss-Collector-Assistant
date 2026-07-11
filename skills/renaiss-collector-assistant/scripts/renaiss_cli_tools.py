@@ -4,8 +4,8 @@
 Requires Node.js >=22 and Renaiss CLI via `npx --yes renaiss`.
 Uses only Python stdlib.
 """
-import argparse, asyncio, csv, json, os, re, subprocess, sys, time, urllib.parse, urllib.request, urllib.error
-from datetime import datetime, timezone
+import argparse, asyncio, csv, hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request, urllib.error, uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -14,7 +14,18 @@ try:
 except Exception:
     pass
 
-FEE_RATE = float(os.getenv("RENAISS_SELLER_FEE_RATE", "0.02"))
+def parse_fee_rate(raw=None):
+    raw = os.getenv("RENAISS_SELLER_FEE_RATE", "0.02") if raw is None else raw
+    try:
+        fee_rate = float(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid RENAISS_SELLER_FEE_RATE={raw!r}; expected a number in [0, 1).") from exc
+    if not 0 <= fee_rate < 1:
+        raise RuntimeError(f"Invalid RENAISS_SELLER_FEE_RATE={raw!r}; expected a number in [0, 1).")
+    return fee_rate
+
+
+FEE_RATE = parse_fee_rate()
 CARD_URL_PREFIX = "https://www.renaiss.xyz/card/"
 
 
@@ -33,6 +44,8 @@ def parse_iso_datetime(value):
         return None
     try:
         text = str(value).strip()
+        if text.endswith(" UTC"):
+            text = text[:-4] + "+00:00"
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
@@ -43,11 +56,22 @@ def parse_iso_datetime(value):
         return None
 
 
-def is_expired_ask(value, now=None):
+def ask_expiry_status(value, now=None):
+    """Return active / expired / unknown / missing for an ask expiry value."""
+    if value is None or str(value).strip() == "":
+        return "missing"
     dt = parse_iso_datetime(value)
     if not dt:
-        return False
-    return dt <= (now or datetime.now(timezone.utc))
+        return "unknown"
+    return "expired" if dt <= (now or datetime.now(timezone.utc)) else "active"
+
+
+def is_expired_ask(value, now=None):
+    return ask_expiry_status(value, now=now) == "expired"
+
+
+def has_unknown_ask_expiry(value):
+    return ask_expiry_status(value) == "unknown"
 
 
 def parse_token_id(value: str) -> str | None:
@@ -112,6 +136,7 @@ def normalize_market_card(card, collected_at):
     attrs = card.get("attributes") or []
     serial_raw = extract_attr(attrs, "Serial")
     lang = extract_attr(attrs, "Language")
+    expiry_status = ask_expiry_status(ask_expires_at)
     return {
         "collected_at_utc": collected_at,
         "source": "Renaiss CLI",
@@ -127,7 +152,9 @@ def normalize_market_card(card, collected_at):
         "askPriceInUSDT_raw": ask,
         "ask_usdt": usdt_wei_to_float(ask),
         "askExpiresAt": ask_expires_at,
-        "ask_is_expired_at_collection": is_expired_ask(ask_expires_at),
+        "ask_expiry_status": expiry_status,
+        "ask_expiry_parse_error": expiry_status == "unknown",
+        "ask_is_expired_at_collection": expiry_status == "expired",
         "fmvPriceInUSD_raw": fmv,
         "fmv_usd": usd_cents_to_float(fmv),
         "vaultLocation": card.get("vaultLocation"),
@@ -157,18 +184,42 @@ def cmd_extract_token(args):
     print(token_id)
 
 
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def input_snapshot_id(path):
+    p = Path(path)
+    return f"{p.name}:sha256:{file_sha256(p)}"
+
+
 def cmd_marketplace_snapshot(args):
+    if args.limit <= 0:
+        raise SystemExit("--limit must be positive")
+    if args.max_pages <= 0:
+        raise SystemExit("--max-pages must be positive")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
     meta_path = out.with_suffix(out.suffix + ".meta.json")
+    meta_tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
     offset = args.offset
     total = 0
     pages = 0
     collected_at = utc_now()
+    snapshot_id = f"marketplace-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    seen_token_ids = set()
+    duplicate_token_ids = 0
     try:
         with tmp.open("w", encoding="utf-8") as f:
             while True:
+                if pages >= args.max_pages:
+                    raise RuntimeError(f"Exceeded --max-pages={args.max_pages}; pagination did not complete")
+                page_offset = offset
                 cmd = ["npx", "--yes", "renaiss", "marketplace", "--limit", str(args.limit), "--offset", str(offset), "--json"]
                 if args.listed:
                     cmd.append("--listed")
@@ -181,22 +232,49 @@ def cmd_marketplace_snapshot(args):
                 data = run_json(cmd)
                 pages += 1
                 for card in data.get("collection", []):
-                    f.write(json.dumps(normalize_market_card(card, collected_at), ensure_ascii=False) + "\n")
+                    token_id = str(card.get("tokenId") or "")
+                    if token_id and token_id in seen_token_ids:
+                        duplicate_token_ids += 1
+                        continue
+                    if token_id:
+                        seen_token_ids.add(token_id)
+                    row = normalize_market_card(card, collected_at)
+                    row["snapshot_id"] = snapshot_id
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
                     total += 1
                 pag = data.get("pagination", {})
                 if not pag.get("hasMore"):
                     break
-                offset += int(pag.get("limit", args.limit))
+                page_limit = int(pag.get("limit", args.limit))
+                if page_limit <= 0:
+                    raise RuntimeError(f"Pagination made no progress: limit={page_limit}, offset={page_offset}")
+                next_offset = page_offset + page_limit
+                if next_offset <= page_offset:
+                    raise RuntimeError(f"Pagination offset did not advance: offset={page_offset}, next_offset={next_offset}")
+                offset = next_offset
+        digest = file_sha256(tmp)
+        meta = {
+            "complete": True,
+            "snapshot_id": snapshot_id,
+            "sha256": digest,
+            "pages": pages,
+            "rows": total,
+            "duplicate_token_ids_skipped": duplicate_token_ids,
+            "started_at_utc": collected_at,
+            "completed_at_utc": utc_now(),
+            "out": str(out),
+        }
+        meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, out)
-        meta = {"complete": True, "pages": pages, "rows": total, "started_at_utc": collected_at, "completed_at_utc": utc_now(), "out": str(out)}
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
     except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for p in (tmp, meta_tmp):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
         raise
-    print(json.dumps({"out": str(out), "rows": total, "pages": pages, "meta_out": str(meta_path), "collected_at_utc": collected_at}, ensure_ascii=False, indent=2))
+    print(json.dumps({"out": str(out), "rows": total, "pages": pages, "meta_out": str(meta_path), "snapshot_id": snapshot_id, "sha256": digest, "collected_at_utc": collected_at}, ensure_ascii=False, indent=2))
 
 def env_int(name, default):
     try:
@@ -327,6 +405,8 @@ def normalize_detail(resp, collected_at):
     last_sale = pricing.get("last_sale") or {}
     price = pricing.get("price") or {}
     method = (resp.get("_fetch_meta") or {}).get("method") or resp.get("method")
+    ask_expires_at = c.get("askExpiresAt")
+    expiry_status = ask_expiry_status(ask_expires_at)
     return {
         "collected_at_utc": collected_at,
         "source": "Renaiss Card API" if method == "api" else "Renaiss CLI",
@@ -353,7 +433,10 @@ def normalize_detail(resp, collected_at):
         "top_offer_usdt": usdt_wei_to_float(top_offer.get("value")),
         "last_sale_raw": last_sale.get("value"),
         "last_sale_usdt": usdt_wei_to_float(last_sale.get("value")),
-        "askExpiresAt": c.get("askExpiresAt"),
+        "askExpiresAt": ask_expires_at,
+        "ask_expiry_status": expiry_status,
+        "ask_expiry_parse_error": expiry_status == "unknown",
+        "ask_is_expired_at_collection": expiry_status == "expired",
         "frontImageUrl": c.get("frontImageUrl"),
         "backImageUrl": c.get("backImageUrl"),
         "attributes_json": attrs,
@@ -366,7 +449,9 @@ def normalize_detail(resp, collected_at):
 def read_jsonl(path, tolerate_last_truncated=True):
     rows = []
     p = Path(path)
-    lines = p.read_text(encoding="utf-8").splitlines()
+    text = p.read_text(encoding="utf-8")
+    has_truncated_tail = bool(text and not text.endswith("\n"))
+    lines = text.splitlines()
     for line_no, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
@@ -375,7 +460,7 @@ def read_jsonl(path, tolerate_last_truncated=True):
             rows.append(json.loads(line))
         except json.JSONDecodeError as e:
             is_last = line_no == len(lines)
-            if tolerate_last_truncated and is_last:
+            if tolerate_last_truncated and is_last and has_truncated_tail:
                 print(json.dumps({
                     "event": "jsonl_truncated_line_skipped",
                     "path": str(path),
@@ -419,6 +504,19 @@ def append_jsonl(path, rows):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def build_pending_token_ids(token_ids, completed=None, attempted=None, *, resume=True, retry_errors=True, limit=0):
+    completed = completed or set()
+    attempted = attempted or set()
+    if resume:
+        skip = completed if retry_errors else attempted
+        pending = [tid for tid in token_ids if tid not in skip]
+    else:
+        pending = list(token_ids)
+    if limit:
+        pending = pending[:limit]
+    return pending
+
+
 async def run_card_detail_batch(token_ids, concurrency, inter_request_delay, retries, timeout, method):
     sem = asyncio.Semaphore(concurrency)
     rate_lock = asyncio.Lock()
@@ -456,12 +554,21 @@ def cmd_card_details(args):
             seen.add(str(tid)); token_ids.append(str(tid))
         elif not tid:
             skipped_rows.append({"row_index": idx, "error": "missing_or_invalid_token_id", "row": r})
-    if args.limit:
-        token_ids = token_ids[:args.limit]
+    if not args.resume and Path(args.out).exists():
+        Path(args.out).unlink()
+    completed, attempted = load_existing_detail_state(args.out) if args.resume else (set(), set())
+    pending = build_pending_token_ids(
+        token_ids,
+        completed,
+        attempted,
+        resume=args.resume,
+        retry_errors=args.retry_errors,
+        limit=args.limit,
+    )
 
     method = args.method
     if method == "auto":
-        method = "cli" if len(token_ids) <= args.api_threshold else "api"
+        method = "cli" if len(pending) <= args.api_threshold else "api"
     if method == "api":
         max_concurrency = env_int("RENAISS_CARD_DETAIL_MAX_CONCURRENCY", 1)
         concurrency_default = env_int("RENAISS_CARD_DETAIL_API_CONCURRENCY", 1)
@@ -481,15 +588,6 @@ def cmd_card_details(args):
     forbidden_cooldown = max(0.0, args.forbidden_cooldown if args.forbidden_cooldown is not None else env_float("RENAISS_CARD_DETAIL_FORBIDDEN_COOLDOWN", 300 if method == "api" else 900))
     retries = max(0, args.retries if args.retries is not None else env_int("RENAISS_CARD_DETAIL_RETRIES", 1))
     timeout = max(30, args.timeout if args.timeout is not None else env_int("RENAISS_CARD_DETAIL_TIMEOUT", 120))
-
-    if not args.resume and Path(args.out).exists():
-        Path(args.out).unlink()
-    completed, attempted = load_existing_detail_state(args.out) if args.resume else (set(), set())
-    if args.resume:
-        skip = completed if args.retry_errors else attempted
-        pending = [tid for tid in token_ids if tid not in skip]
-    else:
-        pending = token_ids
 
     collected_at = utc_now()
     summary = {
@@ -678,26 +776,49 @@ def index_state_key(token_id, serial):
     return (str(token_id or ""), str(serial or ""))
 
 
-def read_terminal_state_keys(path):
+def utc_timestamp(value):
+    dt = parse_iso_datetime(value)
+    return dt.timestamp() if dt else None
+
+
+def read_terminal_state_keys(path, *, snapshot_id=None, now=None):
     p = Path(path)
     if not p.exists() or p.stat().st_size == 0:
         return set()
+    now_ts = (now or datetime.now(timezone.utc)).timestamp()
     keys = set()
     for row in read_jsonl(p):
-        if row.get("terminal"):
-            keys.add(index_state_key(row.get("tokenId"), row.get("serial")))
+        if not row.get("terminal"):
+            continue
+        row_snapshot = row.get("snapshot_id")
+        # When the current command has a snapshot_id, only skip states from the
+        # same input snapshot; legacy unscoped states are intentionally ignored
+        # so old checkpoints cannot permanently starve newer scans.
+        if snapshot_id and row_snapshot != snapshot_id:
+            continue
+        expires_ts = utc_timestamp(row.get("expires_at_utc"))
+        if expires_ts is not None and expires_ts <= now_ts:
+            continue
+        keys.add(index_state_key(row.get("tokenId"), row.get("serial")))
     return keys
 
 
-def build_index_state(row, status, *, terminal=True, error=None, extra=None):
+def build_index_state(row, status, *, terminal=True, error=None, extra=None, run_id=None, snapshot_id=None, ttl_seconds=None):
     serial = row.get("serial_raw") or row.get("serial_number")
+    processed_at = datetime.now(timezone.utc)
     out = {
-        "processed_at_utc": utc_now(),
+        "processed_at_utc": processed_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "tokenId": row.get("tokenId"),
         "serial": serial,
         "status": status,
         "terminal": terminal,
     }
+    if run_id:
+        out["run_id"] = run_id
+    if snapshot_id:
+        out["snapshot_id"] = snapshot_id
+    if ttl_seconds and ttl_seconds > 0:
+        out["expires_at_utc"] = (processed_at + timedelta(seconds=ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S UTC")
     if error:
         out["error"] = str(error)
     if extra:
@@ -751,7 +872,10 @@ def build_arbitrage_candidates(rows):
         ask = r.get("ask_usdt")
         if not ask or ask <= 0:
             continue
-        if is_expired_ask(r.get("askExpiresAt")):
+        expiry_status = r.get("ask_expiry_status") or ask_expiry_status(r.get("askExpiresAt"))
+        if r.get("ask_is_expired_at_collection") is True:
+            expiry_status = "expired"
+        if expiry_status in {"expired", "unknown"}:
             continue
         top = r.get("top_offer_usdt")
         fmv = r.get("fmv_usd")
@@ -831,7 +955,7 @@ def graded_index_lookup(cert, *, retries=2):
     normalized = normalize_cert(cert)
     if not normalized:
         return {"cert": cert, "normalized_cert": None, "found": False, "error": "invalid_cert"}
-    path = "/v1/graded/" + urllib.parse.quote(normalized)
+    path = "/v1/graded/" + urllib.parse.quote(normalized, safe="")
     response = renaiss_index_get(path, retries=retries)
     data = response.get("data") or {}
     response_cert = normalize_cert(data.get("cert") or data.get("certNumber") or ((data.get("collectible") or {}).get("cardIdentifier")))
@@ -872,7 +996,7 @@ def graded_price_candidate(card, lookup):
     }
 
 
-def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, delay=0.25, max_cards=0, retries=2, skip_keys=None):
+def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, delay=0.25, max_cards=0, retries=2, skip_keys=None, run_id=None, snapshot_id=None, state_ttl_seconds=0):
     """Build Index arbitrage candidates using exact /v1/graded/{cert} matching.
 
     `search_limit` is kept for backward-compatible tests/CLI signatures, but exact
@@ -884,21 +1008,45 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
     states = []
     searched = 0
     skip_keys = skip_keys or set()
-    cards = rows[:max_cards] if max_cards else rows
+
+    def state(row, status, *, terminal=True, error=None, extra=None):
+        return build_index_state(
+            row,
+            status,
+            terminal=terminal,
+            error=error,
+            extra=extra,
+            run_id=run_id,
+            snapshot_id=snapshot_id,
+            ttl_seconds=state_ttl_seconds if terminal else None,
+        )
+
+    eligible = []
+    for r in rows:
+        serial = r.get("serial_raw") or r.get("serial_number")
+        token_id = r.get("tokenId")
+        if index_state_key(token_id, serial) not in skip_keys:
+            eligible.append(r)
+    cards = eligible[:max_cards] if max_cards else eligible
     for r in cards:
         ask = r.get("ask_usdt")
         serial = r.get("serial_raw") or r.get("serial_number")
         token_id = r.get("tokenId")
-        key = index_state_key(token_id, serial)
-        if key in skip_keys:
-            continue
         if not ask or ask <= 0 or not serial:
-            states.append(build_index_state(r, "invalid_input", terminal=True, error="missing ask_usdt or serial"))
+            states.append(state(r, "invalid_input", terminal=True, error="missing ask_usdt or serial"))
             continue
-        if is_expired_ask(r.get("askExpiresAt")) or r.get("ask_is_expired_at_collection") is True:
+        expiry_status = r.get("ask_expiry_status") or ask_expiry_status(r.get("askExpiresAt"))
+        if r.get("ask_is_expired_at_collection") is True:
+            expiry_status = "expired"
+        if expiry_status == "expired":
             err = {"tokenId": token_id, "serial": serial, "error": "expired_ask_skipped"}
             errors.append(err)
-            states.append(build_index_state(r, "expired", terminal=True, error="expired_ask_skipped"))
+            states.append(state(r, "expired", terminal=True, error="expired_ask_skipped"))
+            continue
+        if expiry_status == "unknown":
+            err = {"tokenId": token_id, "serial": serial, "error": "unknown_ask_expiry_skipped", "askExpiresAt": r.get("askExpiresAt")}
+            errors.append(err)
+            states.append(state(r, "unknown_ask_expiry", terminal=True, error="unknown_ask_expiry_skipped"))
             continue
         try:
             lookup = graded_index_lookup(serial, retries=retries)
@@ -916,7 +1064,7 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
                     "response_cert": lookup.get("response_cert"),
                 }
                 errors.append(err)
-                states.append(build_index_state(r, status, terminal=True, error="no_exact_index_price", extra={
+                states.append(state(r, status, terminal=True, error="no_exact_index_price", extra={
                     "exact_cert_match": lookup.get("exact_cert_match"),
                     "response_cert": lookup.get("response_cert"),
                 }))
@@ -925,7 +1073,7 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
             net = price_usd * (1 - FEE_RATE)
             spread = net - float(ask)
             if spread < min_spread:
-                states.append(build_index_state(r, "no_spread", terminal=True, extra={
+                states.append(state(r, "no_spread", terminal=True, extra={
                     "index_price_usd": price_usd,
                     "index_spread_usdt": spread,
                     "index_confidence": best.get("confidence"),
@@ -951,7 +1099,7 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
                 "source": "Renaiss marketplace + Renaiss OS Index API /v1/graded exact cert lookup",
             }
             out_rows.append(candidate)
-            states.append(build_index_state(r, "candidate", terminal=True, extra={
+            states.append(state(r, "candidate", terminal=True, extra={
                 "index_price_usd": price_usd,
                 "index_spread_usdt": spread,
                 "index_confidence": best.get("confidence"),
@@ -960,7 +1108,7 @@ def build_index_arbitrage_candidates(rows, *, search_limit=3, min_spread=0.0, de
             }))
         except Exception as exc:
             errors.append({"tokenId": token_id, "serial": serial, "error": str(exc), "error_type": type(exc).__name__})
-            states.append(build_index_state(r, "transient_error", terminal=False, error=str(exc), extra={"error_type": type(exc).__name__}))
+            states.append(state(r, "transient_error", terminal=False, error=str(exc), extra={"error_type": type(exc).__name__}))
         if delay:
             time.sleep(delay)
     out_rows.sort(key=lambda x: x.get("ranking_value") or 0, reverse=True)
@@ -973,9 +1121,10 @@ def cmd_index_arbitrage_scan(args):
     rows = read_jsonl(args.cards)
     errors_out = args.errors_out or (args.out + ".errors.jsonl")
     state_out = args.state_out or (args.out + ".state.jsonl")
-    skip_keys = read_terminal_state_keys(state_out) if args.resume else set()
-    if args.resume:
-        skip_keys |= read_csv_key_set(args.out, "tokenId", "serial_raw")
+    snapshot_id = input_snapshot_id(args.cards)
+    run_id = f"index-arbitrage-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    state_ttl_seconds = max(0, args.state_ttl_seconds)
+    skip_keys = read_terminal_state_keys(state_out, snapshot_id=snapshot_id) if args.resume else set()
     if not args.resume:
         write_csv(args.out, [], INDEX_ARBITRAGE_FIELDNAMES)
         Path(errors_out).parent.mkdir(parents=True, exist_ok=True)
@@ -990,6 +1139,9 @@ def cmd_index_arbitrage_scan(args):
         max_cards=args.max_cards,
         retries=args.retries,
         skip_keys=skip_keys,
+        run_id=run_id,
+        snapshot_id=snapshot_id,
+        state_ttl_seconds=state_ttl_seconds,
     )
     append_csv_rows(args.out, out_rows, INDEX_ARBITRAGE_FIELDNAMES)
     if errors:
@@ -1006,6 +1158,9 @@ def cmd_index_arbitrage_scan(args):
         "candidates": len(out_rows),
         "errors": len(errors),
         "states_written": len(states),
+        "snapshot_id": snapshot_id,
+        "run_id": run_id,
+        "state_ttl_seconds": state_ttl_seconds,
         "fee_rate": FEE_RATE,
         "requires_index_api_key": args.require_key,
         "match_mode": "exact_/v1/graded_cert",
@@ -1070,7 +1225,7 @@ def main():
     e = sub.add_parser("extract-token-id"); e.add_argument("value"); e.set_defaults(func=cmd_extract_token)
     m = sub.add_parser("marketplace-snapshot")
     m.add_argument("--listed", action="store_true"); m.add_argument("--grading"); m.add_argument("--category"); m.add_argument("--search")
-    m.add_argument("--limit", type=int, default=100); m.add_argument("--offset", type=int, default=0); m.add_argument("--out", required=True)
+    m.add_argument("--limit", type=int, default=100); m.add_argument("--offset", type=int, default=0); m.add_argument("--max-pages", type=int, default=env_int("RENAISS_MARKETPLACE_MAX_PAGES", 10000)); m.add_argument("--out", required=True)
     m.set_defaults(func=cmd_marketplace_snapshot)
     d = sub.add_parser("card-details")
     d.add_argument("--input", required=True); d.add_argument("--out", required=True)
@@ -1098,7 +1253,8 @@ def main():
     ia.add_argument("--max-cards", type=int, default=0, help="optional cap for smoke tests; 0 means all eligible cards")
     ia.add_argument("--errors-out", help="JSONL file for per-card Index API errors/skips; default is OUT.errors.jsonl")
     ia.add_argument("--state-out", help="JSONL checkpoint state for every processed card; default is OUT.state.jsonl")
-    ia.add_argument("--resume", action="store_true", help="append to existing output and skip tokenId+serial pairs with terminal state")
+    ia.add_argument("--resume", action="store_true", help="append to existing output and skip tokenId+serial pairs with unexpired terminal state for the same input snapshot")
+    ia.add_argument("--state-ttl-seconds", type=int, default=env_int("RENAISS_INDEX_STATE_TTL_SECONDS", 6 * 60 * 60), help="TTL for dynamic Index checkpoint states; default 6 hours")
     ia.add_argument("--retries", type=int, default=2, help="per-card Index API retry count for 429/5xx/network failures")
     ia.add_argument("--allow-public-index", dest="require_key", action="store_false", default=True, help="allow public 10/day Index API quota for tiny smoke tests")
     ia.set_defaults(func=cmd_index_arbitrage_scan)

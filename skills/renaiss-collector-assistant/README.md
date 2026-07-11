@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.8`
+Version: `0.1.9`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -88,7 +88,7 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
   --out outputs/index_arbitrage_candidates.csv
 ```
 
-输出会包含 `index_price_usd`、`index_confidence`、`exact_cert_match`、`index_spread_usdt` 和 `risk_notes`。不能 exact cert match 或没有 Index 价格的行会写入 `outputs/index_arbitrage_candidates.csv.errors.jsonl`；每张卡的处理状态会写入 `outputs/index_arbitrage_candidates.csv.state.jsonl`，用于 `--resume`。
+输出会包含 `index_price_usd`、`index_confidence`、`exact_cert_match`、`index_spread_usdt` 和 `risk_notes`。不能 exact cert match 或没有 Index 价格的行会写入 `outputs/index_arbitrage_candidates.csv.errors.jsonl`；每张卡的处理状态会写入 `outputs/index_arbitrage_candidates.csv.state.jsonl`。`--resume` 只跳过同一输入快照内尚未过期的 terminal 状态，默认 TTL 为 6 小时，避免动态价格状态长期跳过。
 
 卡牌 watchlist 快照：
 

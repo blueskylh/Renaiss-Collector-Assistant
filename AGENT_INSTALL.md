@@ -43,6 +43,50 @@ npx --yes renaiss --help
 
 ---
 
+## 第 0 步：如果已经安装，先检查是否需要更新
+
+如果 agent 已经安装过 `renaiss-collector-assistant`，不要直接覆盖。先比较本地 skill 和 GitHub 仓库的版本号：
+
+1. 读取本地：
+
+```text
+<AGENT_SKILLS_DIR>/renaiss-collector-assistant/manifest.json
+```
+
+2. 读取 GitHub 仓库：
+
+```text
+https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/skills/renaiss-collector-assistant/manifest.json
+```
+
+3. 按 semantic version 比较：
+
+- 如果 GitHub 仓库版本号更新，则从 GitHub 更新本地 skill。
+- 如果本地版本号更新，则不要自动覆盖，先告诉用户“本地 skill 比 GitHub 新”。
+- 如果版本一致，则不需要重复安装，除非用户明确要求重新安装。
+
+安全更新示例：
+
+```bash
+rsync -a --delete \
+  --exclude '.env' \
+  --exclude 'data/' \
+  --exclude 'outputs/' \
+  skills/renaiss-collector-assistant/ \
+  <AGENT_SKILLS_DIR>/renaiss-collector-assistant/
+```
+
+更新后运行：
+
+```bash
+cd <AGENT_SKILLS_DIR>/renaiss-collector-assistant
+bash scripts/install_check.sh
+```
+
+注意：不要覆盖或输出用户本地 `.env`、API key、SSH 私钥、deploy key、`data/`、`outputs/`。
+
+---
+
 ## 第 1 步：下载 skill
 
 如果 agent 可以访问 GitHub 仓库：
@@ -286,7 +330,7 @@ python3 scripts/renaiss_cli_tools.py index-arbitrage-scan \
   --out outputs/index_arbitrage_candidates.csv
 ```
 
-这会使用 `/v1/graded/{cert}` 精确匹配 PSA cert；不能精确匹配或没有 Index 价格的卡会写入 `*.errors.jsonl`，不会进入套利榜单。每张卡的处理状态会写入 `*.state.jsonl`，`--resume` 会跳过 terminal 状态，避免重复消耗 Index API 额度。
+这会使用 `/v1/graded/{cert}` 精确匹配 PSA cert；不能精确匹配或没有 Index 价格的卡会写入 `*.errors.jsonl`，不会进入套利榜单。每张卡的处理状态会写入 `*.state.jsonl`，`--resume` 只跳过同一输入快照内尚未过期的 terminal 状态，默认 TTL 为 6 小时，避免动态价格状态长期跳过。
 
 ### 套利扫描
 

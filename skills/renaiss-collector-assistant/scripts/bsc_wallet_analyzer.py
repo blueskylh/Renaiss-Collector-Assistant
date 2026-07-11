@@ -6,7 +6,7 @@ For full wallet history this helper uses Alchemy's BNB Mainnet Transfers API
 when an Alchemy key/RPC URL is configured. Receipt decoding uses the Alchemy
 BNB RPC first, with public BSC RPC endpoints kept only as read-only fallbacks.
 """
-import argparse, base64, collections, datetime, json, os, re, shutil, subprocess, sys, urllib.parse, urllib.request
+import argparse, base64, collections, datetime, ipaddress, json, os, re, shutil, socket, subprocess, sys, urllib.parse, urllib.request
 
 try:
     from common_env import load_dotenv_files
@@ -190,14 +190,40 @@ def normalize_metadata_uri(uri, token_id):
     return uri
 
 
+def _host_resolves_private(host):
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception as exc:
+        raise RuntimeError(f"metadata host resolution failed: {host}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            return True
+    return False
+
+
+def validate_metadata_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise RuntimeError(f"metadata URL scheme not allowed: {parsed.scheme or 'missing'}")
+    if not parsed.hostname:
+        raise RuntimeError("metadata URL host missing")
+    if _host_resolves_private(parsed.hostname):
+        raise RuntimeError(f"metadata URL resolves to private/loopback address: {parsed.hostname}")
+
+
 def fetch_json_url(url):
     if url.startswith("data:application/json"):
         meta, data = url.split(",", 1)
         if ";base64" in meta:
             return json.loads(base64.b64decode(data).decode("utf-8"))
         return json.loads(urllib.parse.unquote(data))
+    validate_metadata_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": "RenaissCollectorAssistant/0.1"})
     with urllib.request.urlopen(req, timeout=30) as r:
+        final_url = r.geturl()
+        if final_url and final_url != url:
+            validate_metadata_url(final_url)
         return json.load(r)
 
 
@@ -857,9 +883,15 @@ def build_wallet_report(address, limit=100, source="auto", max_pages=5, max_wall
         if w in seen_wallets:
             continue
         seen_wallets.add(w)
-        hist = fetch_wallet_history(w, limit=limit, source=source, max_pages=max_pages)
+        try:
+            hist = fetch_wallet_history(w, limit=limit, source=source, max_pages=max_pages)
+        except Exception as e:
+            hist = {"source": source, "data": [], "meta": {}, "error": str(redact_secret_url(e))}
         history_by_wallet[w] = hist
-        wallet_details[w] = fetch_wallet_detail(w, source=source)
+        try:
+            wallet_details[w] = fetch_wallet_detail(w, source=source)
+        except Exception as e:
+            wallet_details[w] = {"source": None, "data": {}, "meta": {}, "error": str(redact_secret_url(e))}
         tx_hashes = []
         for item in hist.get("data") or []:
             h = item.get("tx_hash")

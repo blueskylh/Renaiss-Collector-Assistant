@@ -322,7 +322,7 @@ CLI fallback / conservative defaults:
 - Default batch cooldown: 90 seconds.
 - If any batch returns `Forbidden`, cool down before continuing.
 - Resume from the output JSONL: skip completed tokenIds and retry prior error rows unless the user disables retries.
-- JSONL readers tolerate a truncated final line so interrupted scans can resume.
+- JSONL readers tolerate only a truncated final line without a trailing newline; complete malformed JSONL rows must fail loudly.
 - Cache completed rows for 24 hours unless the user asks to refresh immediately.
 
 Seller fee:
@@ -378,7 +378,7 @@ Rules:
 - Output `index_confidence` so users can see whether the benchmark is high/low confidence.
 - Explain that Index price is not executable liquidity.
 - Continue scanning after per-card Index API errors and save errors to JSONL.
-- Save per-card state to `OUT.state.jsonl`; `--resume` skips terminal statuses such as `candidate`, `no_price`, `no_spread`, `no_exact_match`, `expired`, and `invalid_input`, while retrying transient errors.
+- Save per-card state to `OUT.state.jsonl`; `--resume` skips only unexpired terminal statuses from the same input snapshot. Dynamic statuses such as `candidate`, `no_price`, `no_spread`, `no_exact_match`, `expired`, and `invalid_input` carry a TTL (`RENAISS_INDEX_STATE_TTL_SECONDS`, default 6h) so later scans can recompute prices and listings.
 
 Mandatory risk notes:
 

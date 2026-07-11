@@ -310,6 +310,94 @@ class CoreLogicTests(unittest.TestCase):
         self.assertEqual(set(rows["0xabc"]["alchemy_categories"]), {"erc20", "erc721"})
         self.assertEqual(set(rows["0xabc"]["alchemy_assets"]), {"USDT", "NFT"})
 
+    def test_card_details_resume_limit_filters_before_limit(self):
+        token_ids = [str(i) for i in range(1, 21)]
+        pending = cli.build_pending_token_ids(token_ids, completed={str(i) for i in range(1, 11)}, resume=True, retry_errors=True, limit=5)
+        self.assertEqual(pending, ["11", "12", "13", "14", "15"])
+        self.assertEqual("cli" if len(pending) <= 10 else "api", "cli")
+
+    def test_index_resume_max_cards_filters_skip_before_limit(self):
+        old = cli.graded_index_lookup
+        seen = []
+        try:
+            def fake_lookup(cert, retries=2):
+                seen.append(cert)
+                return {
+                    "found": True,
+                    "exact_cert_match": True,
+                    "normalized_cert": cert,
+                    "response_cert": cert,
+                    "data": {"card": {"priceUsdCents": 20000, "confidence": "prime"}},
+                }
+            cli.graded_index_lookup = fake_lookup
+            rows = [
+                {"tokenId": str(i), "name": f"Card {i}", "serial_raw": f"PSA{i}", "serial_number": i, "ask_usdt": 100}
+                for i in range(1, 6)
+            ]
+            out, searched, errors, states = cli.build_index_arbitrage_candidates(
+                rows,
+                max_cards=2,
+                skip_keys={("1", "PSA1"), ("2", "PSA2")},
+                delay=0,
+            )
+        finally:
+            cli.graded_index_lookup = old
+        self.assertEqual(seen, ["PSA3", "PSA4"])
+        self.assertEqual(searched, 2)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(len(states), 2)
+        self.assertEqual(errors, [])
+
+    def test_index_terminal_state_is_snapshot_scoped_and_expires(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "state.jsonl"
+            p.write_text(
+                json.dumps({"tokenId": "x", "serial": "PSA123", "terminal": True, "snapshot_id": "A", "expires_at_utc": "2099-01-01 00:00:00 UTC"}) + "\n" +
+                json.dumps({"tokenId": "y", "serial": "PSA124", "terminal": True, "snapshot_id": "A", "expires_at_utc": "2000-01-01 00:00:00 UTC"}) + "\n" +
+                json.dumps({"tokenId": "z", "serial": "PSA125", "terminal": True, "snapshot_id": "B", "expires_at_utc": "2099-01-01 00:00:00 UTC"}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(cli.read_terminal_state_keys(p, snapshot_id="A"), {("x", "PSA123")})
+
+    def test_unknown_ask_expiry_is_not_treated_as_active(self):
+        self.assertEqual(cli.ask_expiry_status("not-a-date"), "unknown")
+        self.assertEqual(cli.build_arbitrage_candidates([{"tokenId": "bad", "ask_usdt": 1, "top_offer_usdt": 10, "askExpiresAt": "not-a-date"}]), [])
+        old = cli.graded_index_lookup
+        try:
+            cli.graded_index_lookup = lambda cert, retries=2: (_ for _ in ()).throw(AssertionError("unknown expiry should not call index"))
+            rows, searched, errors, states = cli.build_index_arbitrage_candidates([
+                {"tokenId": "bad", "serial_raw": "PSA123", "serial_number": 123, "ask_usdt": 1, "askExpiresAt": "not-a-date"}
+            ], delay=0)
+        finally:
+            cli.graded_index_lookup = old
+        self.assertEqual(rows, [])
+        self.assertEqual(searched, 0)
+        self.assertEqual(errors[0]["error"], "unknown_ask_expiry_skipped")
+        self.assertEqual(states[0]["status"], "unknown_ask_expiry")
+
+    def test_jsonl_reader_raises_on_complete_bad_last_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bad.jsonl"
+            p.write_text('{"tokenId":"1"}\n{"tokenId":"2"\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                cli.read_jsonl(p)
+
+    def test_wallet_report_history_failure_becomes_partial(self):
+        a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        old_fetch_history = wallet.fetch_wallet_history
+        old_fetch_detail = wallet.fetch_wallet_detail
+        try:
+            wallet.fetch_wallet_history = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("history down"))
+            wallet.fetch_wallet_detail = lambda address, source="auto": {"data": {}, "meta": {}, "source": "test"}
+            report = wallet.build_wallet_report(a, max_wallets=20)
+        finally:
+            wallet.fetch_wallet_history = old_fetch_history
+            wallet.fetch_wallet_detail = old_fetch_detail
+        summary = report["summary"]
+        self.assertEqual(summary["pnl_completeness"], "partial")
+        self.assertTrue(summary["history_scan_truncated"])
+        self.assertIn(a, summary["history_errors"])
+
 
 if __name__ == "__main__":
     unittest.main()
