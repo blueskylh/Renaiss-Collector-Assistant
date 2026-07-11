@@ -3,6 +3,8 @@
 以下步骤面向 **AI Agent / 自动化 Runner / 开发者**。
 目标是把本仓库中的 Renaiss Collector Assistant skill 安装到 agent 的 skills 目录中，并完成基本验证。
 
+> **Agent 必读：** 如果你是正在执行安装的 AI Agent，请先读取并遵守同仓库根目录的 [`AGENT.md`](./AGENT.md)，再继续执行本文档。`AGENT.md` 是安装 / 更新 / 安全规则，本文档是具体安装步骤。
+
 ---
 
 ## 环境要求
@@ -254,9 +256,12 @@ python3 scripts/bsc_wallet_analyzer.py wallet-report \
 
 ---
 
-## 第 5 步：让 Agent 读取 skill 规则
+## 第 5 步：让 Agent 读取规则文件
 
-Agent 应读取这个文件作为主规则：
+Agent 应按顺序读取并遵守这些规则文件：
+
+1. 仓库根目录的 `AGENT.md`：安装、更新、安全和不要覆盖本地数据的规则。
+2. 安装后的 skill 主规则：
 
 ```text
 <AGENT_SKILLS_DIR>/renaiss-collector-assistant/SKILL.md

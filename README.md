@@ -135,9 +135,12 @@
 把下面这句话直接发送给你的 AI Agent：
 
 ```text
-阅读此文档帮我安装 Renaiss-Collector-Assistant skill：https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/AGENT_INSTALL.md
+请先阅读并遵守 AGENT.md，然后阅读 AGENT_INSTALL.md 帮我安装 Renaiss-Collector-Assistant skill：
+https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/AGENT.md
+https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/AGENT_INSTALL.md
 ```
 
+Agent 行为规则：[`AGENT.md`](./AGENT.md)<br/>
 Agent 安装文档：[`AGENT_INSTALL.md`](./AGENT_INSTALL.md)
 
 如果你的 agent 已经安装过这个 skill，请先按安装文档里的版本检查流程，对比本地 `manifest.json` 和 GitHub 仓库版本；GitHub 版本更新时再同步本地 skill，避免覆盖 `.env`、API key、输出数据和本地改动。
