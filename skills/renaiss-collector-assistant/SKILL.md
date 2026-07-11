@@ -372,7 +372,8 @@ Rules:
 
 - Use `/v1/graded/{cert}` first with the marketplace card's `attributes.Serial` / PSA cert.
 - Require exact normalized cert match, e.g. `PSA127320817 == PSA127320817`; never rank zero-score search results.
-- If exact cert lookup has no price, write the row to `errors.jsonl` and do not create an arbitrage candidate.
+- If exact cert lookup has no price but returns `card.href`, query the card overview endpoint derived from that href and use the overview price only for the same exact cert/card.
+- If exact cert lookup plus overview fallback still has no price, write the row to `errors.jsonl` and do not create an arbitrage candidate.
 - Compare Renaiss OS Index benchmark price with Renaiss marketplace ask.
 - Deduct 2% seller fee from the benchmark sell side.
 - Output `index_confidence` so users can see whether the benchmark is high/low confidence.
@@ -565,7 +566,7 @@ Before responding to the user, verify:
 - For wallet analysis, did you merge only the primary wallet's connected migration component, exclude migration from PnL, and mark partial when history/decode/scan limits apply?
 - For SBT, did you account for ERC-1155 `TransferBatch` and avoid multi-user SBT-overlap migration false positives?
 - For slow `renaiss card` calls, did you use bounded concurrency or explain the runtime?
-- For Index API arbitrage, did you use exact `/v1/graded/{cert}` matching, show `index_confidence`, and save per-card errors?
+- For Index API arbitrage, did you use exact `/v1/graded/{cert}` matching, use card overview fallback when exact cert price is empty, show `index_confidence`, and save per-card errors?
 - Did you preserve `askExpiresAt` from marketplace snapshots, skip expired asks, and avoid non-PSA rows in default Sequential Cert scans?
 - Did you save raw data when running sequential or arbitrage scans?
 

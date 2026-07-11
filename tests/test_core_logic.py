@@ -178,6 +178,33 @@ class CoreLogicTests(unittest.TestCase):
         self.assertTrue(lookup["found"])
         self.assertTrue(lookup["exact_cert_match"])
 
+    def test_graded_lookup_falls_back_to_card_overview_price(self):
+        old = cli.renaiss_index_get
+        try:
+            def fake_get(path, retries=2):
+                if path.startswith("/v1/graded/"):
+                    return {"data": {
+                        "cert": "PSA97970920",
+                        "found": True,
+                        "card": {
+                            "priceUsdCents": None,
+                            "href": "/card/pokemon/test-set/002-vaporeon-vmax-psa-9-japanese-e234b3d8",
+                            "name": "Vaporeon Vmax",
+                        },
+                    }}
+                if path == "/v1/cards/pokemon/test-set/002-vaporeon-vmax-psa-9-japanese-e234b3d8":
+                    return {"data": {"priceUsdCents": 1693, "confidence": "low", "sourceCount": 1, "observationCount": 5}}
+                raise AssertionError(path)
+            cli.renaiss_index_get = fake_get
+            lookup = cli.graded_index_lookup("PSA97970920")
+            best = cli.graded_price_candidate({"tokenId": "x"}, lookup)
+        finally:
+            cli.renaiss_index_get = old
+        self.assertTrue(lookup["found"])
+        self.assertEqual(best["priceUsdCents"], 1693)
+        self.assertEqual(best["confidence"], "low")
+        self.assertEqual(lookup["data"]["overview"]["observationCount"], 5)
+
     def test_marketplace_normalization_preserves_expiry_for_index_scan(self):
         card = {
             "tokenId": "1",

@@ -951,6 +951,44 @@ def renaiss_index_get(path, timeout=60, retries=2, retry_delay=1.0):
     raise RuntimeError("Renaiss OS Index API request failed")
 
 
+def card_overview_path_from_href(href):
+    parts = str(href or "").strip("/").split("/")
+    if len(parts) != 4 or parts[0] != "card":
+        return None
+    return "/v1/cards/" + "/".join(urllib.parse.quote(part, safe="") for part in parts[1:])
+
+
+def merge_overview_price_into_graded_data(data, *, retries=2):
+    """Fallback from exact cert lookup to card overview when graded price is missing.
+
+    Some Index responses can have a cert match but no `card.priceUsdCents`, while
+    the card overview endpoint already has the aggregate benchmark price. Keep the
+    cert match authoritative, but fill price/confidence fields from the overview.
+    """
+    card = data.get("card") or {}
+    if card.get("priceUsdCents") is not None:
+        return data
+    path = card_overview_path_from_href(card.get("href"))
+    if not path:
+        return data
+    try:
+        overview_response = renaiss_index_get(path, retries=retries)
+        overview = overview_response.get("data") or {}
+        if not isinstance(overview, dict):
+            return data
+        data["overview"] = overview
+        for field in [
+            "priceUsdCents", "confidence", "lastSaleAt", "href", "name", "gradeLabel",
+            "grade", "company", "language", "setName", "cardNumber", "sourceCount", "observationCount",
+        ]:
+            if overview.get(field) is not None:
+                card[field] = overview.get(field)
+        data["card"] = card
+    except Exception as exc:
+        data["overview_error"] = str(exc)
+    return data
+
+
 def graded_index_lookup(cert, *, retries=2):
     normalized = normalize_cert(cert)
     if not normalized:
@@ -962,6 +1000,8 @@ def graded_index_lookup(cert, *, retries=2):
     exact = response_cert == normalized
     explicit_found = data.get("found")
     found = (bool(explicit_found) if explicit_found is not None else bool(data.get("card") or data.get("collectible"))) and exact
+    if found:
+        data = merge_overview_price_into_graded_data(data, retries=retries)
     return {
         "query_cert": cert,
         "normalized_cert": normalized,
