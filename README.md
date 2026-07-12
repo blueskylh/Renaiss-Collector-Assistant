@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 
 
 <p align="center">
-  <a href="https://youtu.be/JvZRrjviPjc"><strong>YouTube 演示视频</strong></a>
+  <a href="https://youtu.be/neup05qwdGc"><strong>YouTube skill讲解演示视频</strong></a>
 </p>
 
 以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描、PSA 连号机会和 Artist Helper。
