@@ -143,8 +143,8 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 
 ```text
 请先阅读并遵守 AGENT.md，然后阅读 AGENT_INSTALL.md 帮我安装 Renaiss-Collector-Assistant skill：
-https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/AGENT.md
-https://github.com/blueskylh/Renaiss-Collector-Assistant/blob/main/AGENT_INSTALL.md
+https://raw.githubusercontent.com/blueskylh/Renaiss-Collector-Assistant/refs/heads/main/AGENT.md
+https://raw.githubusercontent.com/blueskylh/Renaiss-Collector-Assistant/refs/heads/main/AGENT_INSTALL.md
 ```
 
 Agent 行为规则：[`AGENT.md`](./AGENT.md)<br/>
