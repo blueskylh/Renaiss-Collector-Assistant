@@ -37,7 +37,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 | PSA 连号扫描 | 从市场挂牌卡里找 Sequential Cert / 连号 PSA 机会。 |
 | 钱包分析 | 合并迁移前后钱包，统计 pack、buyback、marketplace、当前余额和 SBT。 |
 | 卡牌查询与监控 | 按卡牌截图 / URL / cert 查询详情，并创建价格阈值监控。 |
-| Artist Helper | 生成 Renaiss Artist SBT 可用的卡牌风格图和线稿参考。 |
+| Artist Helper | 生成 tcg 可用的卡牌风格图和线稿参考,用于辅助用户获取Artist sbt。 |
 
 <details open>
 <summary><strong>1. Renaiss OS Index 套利扫描</strong></summary>
