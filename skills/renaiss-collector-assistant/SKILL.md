@@ -292,6 +292,8 @@ Save both raw marketplace/card data and final candidates.
 
 Fetch **all listed marketplace cards** for arbitrage. Do **not** filter to PSA only;套利扫描必须覆盖所有评级公司和未指定评级的已挂单卡。
 
+
+
 Enrich candidates with API/CLI card detail when top offer or verbose price data is needed:
 
 ```bash
@@ -570,11 +572,12 @@ Before responding to the user, verify:
 - For Index API arbitrage, did you use exact `/v1/graded/{cert}` matching, use card overview fallback when exact cert price is empty, show `index_confidence`, and save per-card errors?
 - Did you preserve `askExpiresAt` from marketplace snapshots, skip expired asks, and avoid non-PSA rows in default Sequential Cert scans?
 - Did you save raw data when running sequential or arbitrage scans?
+- Any situation involving arbitrage scanning must inform the users of the risk warnings. Arbitrage data is for reference only; it does not guarantee profits and involves the risk of losses.
 
 
 ## Card Watchlist Monitor
 
-Use report-only watchlists for specific cards. Do not assume Telegram/Discord/Email integrations.
+Use report-only watchlists for specific cards.
 
 ```bash
 python3 scripts/renaiss_cli_tools.py watchlist-snapshot \
