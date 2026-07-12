@@ -285,12 +285,12 @@ scripts/
 这个 skill 可以帮你做 Renaiss 收藏研究：
 
 1. 查卡牌：输入 Renaiss 卡牌链接或 tokenId，就能查看价格、FMV、owner、PSA cert 和最近市场信息。
-2. 找连号：扫描 Renaiss 市场正在出售的卡牌，帮你发现可能用于 Sequential Cert SBT 的连号机会。
+2. 连号：扫描 Renaiss 市场正在出售的卡牌，帮你发现可能用于 Sequential Cert SBT 的连号机会。
 3. 找套利：比较市场挂牌价、top offer、FMV，也可以在有 Renaiss OS Index API key 时加入 Index 价格参考。
 4. 看钱包：分析 Renaiss 新旧钱包迁移、开包、回收、买卖和 SBT 名称，帮你看清总花费和总收入。
 5. 看开包：监控 Renaiss 当前 pack 和最近开出的卡。
 6. 盯卡牌：把你关心的卡加入 watchlist，定期生成价格和状态变化报告。
-7. 画 Artist SBT：生成简单的 TCG 卡牌线稿和彩色参考图，方便新手手动画。
+7.  Artist SBT获取助手：生成简单的 TCG 卡牌线稿和彩色参考图，方便新手手动画,帮助用户获取renaiss用户获取Artist SBT。
 ```
 
 不要使用太多专业术语；用户是收藏家，不一定是开发者。
