@@ -1,6 +1,6 @@
 # Renaiss Collector Assistant
 
-Version: `0.1.10`
+Version: `0.1.11`
 
 这是一个面向主流 agent 的 Renaiss 能力包，覆盖：
 
@@ -12,7 +12,6 @@ Version: `0.1.10`
 - 卡牌价格监控；
 - Renaiss BSC 钱包与老钱包迁移分析；
 - Renaiss OS Index API 查询；
-- Renaiss Artist SBT 辅助创作。
 
 ## 快速安装
 
@@ -143,4 +142,3 @@ python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
 - 套利卖出端扣除 2% 手续费；gas 默认忽略。
 - 钱包分析必须合并旧钱包与新钱包；迁移交易不计入 PnL。
 - RenaissSBT 是 ERC-1155 风格，必须解析 `TransferBatch`。
-- Renaiss Artist 输出必须包含黑白线稿和彩色参考图，并把 Renaiss logo 明确放入画面。

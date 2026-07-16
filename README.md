@@ -6,7 +6,7 @@
 
 本Skill旨在通过自然语言交互，将AI能力融入Reniass生态，让社区成员以对话的方式便捷参与项目、打通数据壁垒，并大幅降低理解与操作门槛。
 
-![Version](https://img.shields.io/badge/version-v0.1.10-black?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-v0.1.11-black?style=for-the-badge)
 ![Renaiss](https://img.shields.io/badge/Renaiss-Collector%20Assistant-6C5CE7?style=for-the-badge)
 ![Multi Agent](https://img.shields.io/badge/Multi--Agent-Ready-00B894?style=for-the-badge)
 ![BSC](https://img.shields.io/badge/BSC-On--Chain-F0B90B?style=for-the-badge)
@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
   <a href="https://youtu.be/neup05qwdGc"><strong>YouTube skill讲解演示视频</strong></a>
 </p>
 
-以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描、PSA 连号机会和 Artist Helper。
+以下截图来自黑客松演示，展示 Agent 安装 skill 后可以直接完成的典型工作流：查卡、钱包分析、Pack 行情、定时监控、FMV / Index 套利扫描和 PSA 连号机会。
 
 | 场景 | 能力亮点 |
 |---|---|
@@ -37,7 +37,6 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 | PSA 连号扫描 | 从市场挂牌卡里找 Sequential Cert / 连号 PSA 机会。 |
 | 钱包分析 | 合并迁移前后钱包，统计 pack、buyback、marketplace、当前余额和 SBT。 |
 | 卡牌查询与监控 | 按卡牌截图 / URL / cert 查询详情，并创建价格阈值监控。 |
-| Artist Helper | 生成 tcg 可用的卡牌风格图和线稿参考,用于辅助用户获取Artist sbt,需要有文生图模型。 |
 
 <details open>
 <summary><strong>1. Renaiss OS Index 套利扫描</strong></summary>
@@ -76,19 +75,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 </details>
 
 <details>
-<summary><strong>4. Artist Helper 生成卡牌参考图</strong></summary>
-
-<p align="center">
-  <img src="media/demo/hackathon/04-artist-helper-prompt.png" alt="Artist helper prompt" width="760" />
-</p>
-<p align="center">
-  <img src="media/demo/hackathon/04-artist-helper-result.png" alt="Artist helper result" width="760" />
-</p>
-
-</details>
-
-<details>
-<summary><strong>5. 钱包分析</strong></summary>
+<summary><strong>4. 钱包分析</strong></summary>
 
 <p align="center">
   <img src="media/demo/hackathon/05-wallet-analysis-prompt.png" alt="Wallet analysis prompt" width="760" />
@@ -100,7 +87,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 </details>
 
 <details>
-<summary><strong>6. 卡牌查询 + Index 参考价</strong></summary>
+<summary><strong>5. 卡牌查询 + Index 参考价</strong></summary>
 
 <p align="center">
   <img src="media/demo/hackathon/06-card-search-prompt.png" alt="Card search prompt" width="760" />
@@ -112,7 +99,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 </details>
 
 <details>
-<summary><strong>7. 定时价格监控</strong></summary>
+<summary><strong>6. 定时价格监控</strong></summary>
 
 <p align="center">
   <img src="media/demo/hackathon/07-watchlist-prompt.png" alt="Watchlist prompt" width="760" />
@@ -124,7 +111,7 @@ https://github.com/user-attachments/assets/46a85a4b-0f2f-4914-8b5f-fefe5465457a
 </details>
 
 <details>
-<summary><strong>8. Pack 市场与最新开包概览</strong></summary>
+<summary><strong>7. Pack 市场与最新开包概览</strong></summary>
 
 <p align="center">
   <img src="media/demo/hackathon/08-pack-market-prompt.png" alt="Pack market prompt" width="760" />
@@ -181,7 +168,6 @@ Agent 安装文档：[`AGENT_INSTALL.md`](./AGENT_INSTALL.md)
 | 📦 **Pack 监控** | 查询和监控 Renaiss 当前 pack、最近开包、tier、FMV 和 tokenId。 | 想追踪开包动态和高价值 pull 的用户 |
 | ⏰ **卡牌 Watchlist** | 定时监控特定卡牌，跟踪价格、FMV、top offer、last sale、owner 和挂单状态变化。 | 想盯住目标卡牌价格变化的用户 |
 | 🏅 **SBT 稀有度排名** | 基于 RenaissSBT ERC-1155 转账重建每个 SBT ID 的当前 holder 数和 supply。 | 想判断 SBT 稀有程度的收藏家 |
-| 🎨 **Artist Helper** | 生成带有 Renaiss 元素的 TCG 卡牌线稿和彩色参考图，帮助用户获取 **Renaiss Artist SBT**。 | 想画 Artist SBT，但不想从零构图的用户 |
 
 ---
 
@@ -314,8 +300,7 @@ python3 scripts/bsc_wallet_analyzer.py sbt-holder-ranking \
         ├── scripts/
         ├── docs/
         ├── workflows/
-        ├── examples/
-        └── assets/
+        └── examples/
 ```
 
 说明：

@@ -131,7 +131,6 @@ ln -s $(pwd)/skills/renaiss-collector-assistant \
 <AGENT_SKILLS_DIR>/renaiss-collector-assistant/scripts/
 <AGENT_SKILLS_DIR>/renaiss-collector-assistant/docs/
 <AGENT_SKILLS_DIR>/renaiss-collector-assistant/workflows/
-<AGENT_SKILLS_DIR>/renaiss-collector-assistant/assets/renaisslogo.jpg
 ```
 
 ---
@@ -290,7 +289,6 @@ scripts/
 4. 看钱包：分析 Renaiss 新旧钱包迁移、开包、回收、买卖和 SBT 名称，帮你看清总花费和总收入。
 5. 看开包：监控 Renaiss 当前 pack 和最近开出的卡。
 6. 盯卡牌：把你关心的卡加入 watchlist，定期生成价格和状态变化报告。
-7.  Artist SBT获取助手：生成简单的 TCG 卡牌线稿和彩色参考图，方便新手手动画,帮助用户获取renaiss用户获取Artist SBT。
 ```
 
 不要使用太多专业术语；用户是收藏家，不一定是开发者。

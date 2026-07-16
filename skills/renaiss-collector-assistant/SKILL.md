@@ -1,8 +1,8 @@
 ---
 name: renaiss-collector-assistant
-version: "0.1.10"
+version: "0.1.11"
 description: >-
-  Renaiss Collector Assistant: use Renaiss CLI, Renaiss OS Index API, and BSC chain data to query Renaiss cards, scan marketplace listings, find sequential PSA cert candidates, detect arbitrage opportunities, monitor card prices, analyze migrated Renaiss wallets, and assist Renaiss Artist image creation.
+  Renaiss Collector Assistant: use Renaiss CLI, Renaiss OS Index API, and BSC chain data to query Renaiss cards, scan marketplace listings, find sequential PSA cert candidates, detect arbitrage opportunities, monitor card prices, and analyze migrated Renaiss wallets.
 tools:
   - bash
 ---
@@ -23,7 +23,6 @@ Use this skill when the user asks about:
 - Renaiss card monitoring tasks.
 - Renaiss BSC wallet history, migrated legacy wallets, packs, card buys/sells, SBTs, or net spend.
 - Renaiss OS Index API search, index, card, trade, series, FMV series, cert lookup, or image valuation.
-- Renaiss Artist SBT artwork generation.
 
 Always answer in the user's language. For Chinese users, use Chinese.
 
@@ -516,23 +515,6 @@ If using public tier without key, warn about 10 requests/day/IP.
 
 ---
 
-## Renaiss Artist image workflow
-
-When the user asks for Renaiss Artist SBT assistance:
-
-1. Ask for character, theme, style, rarity text, color preference, optional wallet/name text, and whether large blank areas are needed for manual coloring.
-2. Generate **two image files**:
-   - Black-and-white line art: printable coloring version.
-   - Full-color reference: completed color guide.
-3. The Renaiss logo must appear as a clear visible element in the card, such as a crest, frame, energy core, card back emblem, or top-left badge. Use `assets/renaisslogo.jpg` as visual reference if the agent supports image references.
-4. Remind the user:
-
-```text
-Renaiss Artist SBT 要求用户创作 Renaiss-related artwork，并在 X 上发布且 tag @renaissxyz。建议用户打印线稿并手动上色，发布上色过程或前后对比，不要只发布 AI 原图。
-```
-
----
-
 ## Output and saving rules
 
 For scans and reports:
@@ -551,8 +533,6 @@ data/renaiss/cards/YYYY-MM-DD/card_details_YYYYMMDD_HHMMSS.jsonl
 outputs/renaiss/sequential/sequential_candidates_YYYYMMDD_HHMMSS.md
 outputs/renaiss/arbitrage/arbitrage_report_YYYYMMDD_HHMMSS.md
 outputs/renaiss/wallet/wallet_report_YYYYMMDD_HHMMSS.md
-outputs/renaiss/artist/<project_name>_lineart.png
-outputs/renaiss/artist/<project_name>_color.png
 ```
 
 ---
